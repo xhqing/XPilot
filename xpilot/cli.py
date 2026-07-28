@@ -12,6 +12,8 @@ import click
 from .config import Config, ConfigError
 from .utils import get_config_dir
 
+logger = logging.getLogger(__name__)
+
 
 def setup_logging():
     """Configure logging to write to both the terminal and a log file.
@@ -272,17 +274,41 @@ def monitor():
         sys.exit(1)
 
 
+def _probe_current_node_latency(node_manager, health_checker, node_id, timeout=3):
+    """Probe the live latency (ms) of a node for the ``status`` command.
+
+    Performs a fresh TCP probe against the node's ``address:port`` instead of
+    reading the cached ``latency`` field in ``nodes.json``, so the value
+    reflects the node's reachability right now — the same metric
+    ``start``/``restart`` use to pick the fastest node. Any failure degrades to
+    a readable label rather than raising, so a flaky or unreachable node never
+    breaks the status output.
+    """
+    if not node_id:
+        return 'N/A'
+    try:
+        node = node_manager.get_node(node_id)
+        latency = health_checker.check_latency(node, timeout=timeout)
+        if latency == float('inf'):
+            return 'timeout'
+        return f'{latency:.0f}ms'
+    except Exception as e:
+        logger.warning(f'Latency probe failed for node {node_id}: {e}')
+        return 'N/A'
+
+
 @cli.command()
 @click.option('-v', '--verbose', is_flag=True, help='Show detailed status')
 def status(verbose):
     """Show proxy service status."""
-    _, _, _, proxy_manager, _, _ = get_managers()
+    _, node_manager, _, proxy_manager, health_checker, _ = get_managers()
     try:
         info = proxy_manager.get_status()
         if info['running']:
             click.echo(click.style('Running', fg='green'))
             click.echo(f'  PID: {info["pid"]}')
             click.echo(f'  Current node: {info.get("node_name", "")} ({info["current_node"]})')
+            click.echo(f'  Latency: {_probe_current_node_latency(node_manager, health_checker, info.get("current_node"))}')
             click.echo(f'  SOCKS port: {info.get("socks_port", "N/A")}')
             click.echo(f'  HTTP port: {info.get("http_port", "N/A")}')
         else:
