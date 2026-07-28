@@ -4,6 +4,12 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.1] - 2026-07-28
+
+### 新增
+
+- `status` 命令展示当前节点的实时延迟：对当前节点做一次 TCP 探测获取实时延迟，替代此前读取缓存延迟字段的做法，使状态输出反映节点当下的可达性。
+
 ## [0.1.0] - 2026-07-07
 
 首个发布版本。一个纯 Python 的命令行代理工具包，以 [Xray-core](https://github.com/XTLS/Xray-core)（v26.3.27）作为后端，提供节点管理、代理服务控制、健康检查与自动切换等功能。
