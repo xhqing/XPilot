@@ -9,7 +9,9 @@ import logging
 import platform
 import click
 
+from . import __version__
 from .config import Config, ConfigError
+from .updater import perform_update, UpdateError
 from .utils import get_config_dir
 
 logger = logging.getLogger(__name__)
@@ -128,11 +130,26 @@ def get_managers():
     return config, node_manager, routing_manager, proxy_manager, health_checker, auto_switch
 
 
-@click.group()
-@click.version_option(version='0.1.0', prog_name='xpilot')
-def cli():
+@click.group(invoke_without_command=True)
+@click.option('--update', is_flag=True,
+              help='Update xpilot to the latest GitHub release, then exit.')
+@click.version_option(version=__version__, prog_name='xpilot')
+def cli(update):
     """xpilot - A CLI proxy management tool with xray backend."""
-    pass
+    ctx = click.get_current_context()
+    if update:
+        # --update is a terminal action: check GitHub for a newer release and
+        # install it via pip, then exit without dispatching to any subcommand.
+        try:
+            perform_update(printer=click.echo)
+        except UpdateError as e:
+            click.echo(f'Update failed: {e}', err=True)
+            sys.exit(1)
+        ctx.exit()
+    if ctx.invoked_subcommand is None:
+        # Bare `xpilot` with no subcommand: show help instead of erroring.
+        click.echo(ctx.get_help())
+        ctx.exit()
 
 
 # ==================== Init Command ====================

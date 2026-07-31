@@ -101,6 +101,8 @@ xpilot --help
 
 > **默认配置无需改动**：`xpilot init` 生成的默认配置中，`xray_bin` 已指向 `/usr/local/bin/xray`，与上一步官方脚本的安装路径一致。若你把 xray 装在了其他位置（例如 Windows 或自定义路径），修改 `~/.config/xpilot/settings.json`（或项目 `config/settings.json`）里的 `xray_bin` 字段指向实际路径即可。
 
+> **后续升级**：安装完成后，随时执行 `xpilot --update` 即可自动从 GitHub Release 检查并升级到最新版，无需手动下载或重新 `pip install`。
+
 ### 第三步：交给 AI 助手安装（可选）
 
 如果你不想手动执行上述命令，可以直接把本章节内容复制给你的 AI 助手（Claude、ChatGPT、Gemini 等），并附上：
@@ -229,6 +231,18 @@ xpilot status -v
 ```bash
 xpilot switch another_node
 ```
+
+---
+
+#### `--update` - 自动升级到最新版
+
+从项目的 [GitHub Release](https://github.com/xhqing/xpilot/releases) 检查最新版本；若比当前版本新，则自动下载并安装（优先用 Release 附带的 wheel，其次 sdist 压缩包，两者都没有时回退到从对应 tag 的源码安装）。
+
+```bash
+xpilot --update
+```
+
+升级源是 GitHub Release（本项目未上架 PyPI）。已是最新版本时会提示并直接退出。
 
 ---
 

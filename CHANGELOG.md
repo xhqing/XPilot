@@ -4,6 +4,16 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- `xpilot --update` 自动升级命令：检查项目的 GitHub Release，若存在比当前版本更新的版本则自动安装——优先用 Release 附带的 wheel，其次 sdist 压缩包，两者都没有时回退到从对应 tag 的源码安装；已是最新版本时提示并退出。xpilot 仅经 GitHub Release 分发（未上架 PyPI），因此更新源指向 GitHub Release，而非 `pip install --upgrade xpilot`。新增 `xpilot/updater.py` 模块承载「取最新 Release / 版本比较 / 选资产 / 调 pip 安装」等逻辑，并配套 `tests/test_updater.py` 单元测试。
+
+### 变更
+
+- 修正版本号基线不一致：`xpilot/__init__.py` 的 `__version__` 与 `cli.py` 的 `--version` 输出由 `0.1.0` 同步至与 `VERSION` 一致的 `0.1.1`，使 `--update` 能基于准确的当前版本判断是否需要升级。
+
 ## [0.1.1] - 2026-07-28
 
 ### 新增
