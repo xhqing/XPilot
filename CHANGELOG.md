@@ -4,6 +4,12 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-07-31
+
+### 新增
+
+- `xpilot rollback` 版本回滚命令：安装一个更早的 GitHub Release——不带 `--version` 时自动回滚到严格早于当前版本的最近一个 Release，带 `--version X.Y.Z` 时安装指定版本；安装复用 `--update` 的资产选择逻辑（优先 wheel、其次 sdist 压缩包、两者都没有时回退到对应 tag 的源码）。为此在 `xpilot/updater.py` 新增 `fetch_releases`（拉取全部 Release 列表）、`pick_previous_release`（取上一版）、`find_release_by_version`（按版本号定位）、`perform_rollback`（编排回滚），并把 `--update` 与 rollback 共用的「选资产 + 调 pip 安装」步骤提取为内部函数 `_install_release`；配套补充 `tests/test_updater.py` 单元测试。
+
 ## [0.2.0] - 2026-07-31
 
 ### 新增

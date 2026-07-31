@@ -11,7 +11,7 @@ import click
 
 from . import __version__
 from .config import Config, ConfigError
-from .updater import perform_update, UpdateError
+from .updater import perform_update, perform_rollback, UpdateError
 from .utils import get_config_dir
 
 logger = logging.getLogger(__name__)
@@ -973,6 +973,27 @@ def config_reset(force):
         click.echo(f'Reset config files: {", ".join(created)}')
     except Exception as e:
         click.echo(f'Failed to reset config: {e}', err=True)
+        sys.exit(1)
+
+
+# ==================== Rollback Command ====================
+
+@cli.command()
+@click.option('--version', '-v', 'version', default=None,
+              help='Target version to roll back to (e.g. 0.1.1). '
+                   'If omitted, rolls back to the previous release.')
+def rollback(version):
+    """Roll back xpilot to a specific or the previous GitHub release.
+
+    Without --version, installs the release immediately older than the
+    currently running one. With --version X.Y.Z, installs that exact
+    release. Installation reuses the same GitHub-Release assets as
+    --update (wheel, then sdist, then git tag).
+    """
+    try:
+        perform_rollback(version, printer=click.echo)
+    except UpdateError as e:
+        click.echo(f'Rollback failed: {e}', err=True)
         sys.exit(1)
 
 

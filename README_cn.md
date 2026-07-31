@@ -246,6 +246,22 @@ xpilot --update
 
 ---
 
+#### `rollback` - 回滚到旧版本
+
+安装一个更早的 [GitHub Release](https://github.com/xhqing/xpilot/releases)。不带 `--version` 时，回滚到严格早于当前版本的最近一个 Release；带 `--version X.Y.Z` 时，安装指定的那个版本。安装复用与 `--update` 相同的资产（优先 wheel，其次 sdist 压缩包，两者都没有时回退到对应 tag 的源码）。
+
+```bash
+# 回滚到上一个版本
+xpilot rollback
+
+# 回滚到指定版本
+xpilot rollback --version 0.1.1
+```
+
+若目标版本与当前版本相同，会提示并直接退出，不做任何改动。
+
+---
+
 ### 节点管理命令
 
 #### `node list` - 列出所有节点

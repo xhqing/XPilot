@@ -246,6 +246,22 @@ The update source is GitHub Release (this project is not published on PyPI). If 
 
 ---
 
+#### `rollback` - Roll back to a previous release
+
+Installs an older [GitHub Release](https://github.com/xhqing/xpilot/releases). Without `--version`, it rolls back to the release immediately older than the currently running version. With `--version X.Y.Z`, it installs that exact release. Installation reuses the same assets as `--update` (wheel, then sdist tarball, then the tagged source).
+
+```bash
+# Roll back to the previous release
+xpilot rollback
+
+# Roll back to a specific version
+xpilot rollback --version 0.1.1
+```
+
+If the target version equals the currently running one, it reports so and exits without doing anything.
+
+---
+
 ### Node Management Commands
 
 #### `node list` - List all nodes
