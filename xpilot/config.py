@@ -110,10 +110,16 @@ class Config:
             'log_level': 'warning',
             'log_file': '/tmp/xpilot.log',
             'auto_switch': {
-                'enabled': False,
+                'enabled': True,
                 'interval': 300,
                 'strategy': 'latency',
-                'threshold': 200
+                # 切换迟滞比例：最优节点延迟需比当前低该比例以上才切换，防抖；
+                # 0 = 最优不是当前就切（默认，最积极选优）。
+                'hysteresis': 0,
+                # 所有节点真实流量都不通时，自动拉订阅按名字刷新已有节点的连接字段。
+                'auto_update_subscription': True,
+                # 订阅自动刷新的退避秒数，避免订阅端临时故障时高频请求。
+                'subscription_refresh_cooldown': 3600
             },
             'watchdog': {
                 'enabled': True,

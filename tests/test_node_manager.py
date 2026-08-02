@@ -199,3 +199,103 @@ class TestNodeManager:
         """测试：获取所有分组信息，验证默认分组 default 存在。"""
         groups = manager.get_groups()
         assert 'default' in groups
+
+    def test_import_subscription_refreshes_existing(self, manager, monkeypatch):
+        """update_existing=True：同名节点的连接字段被刷新，group/id/name 保留。
+
+        模拟机场轮换密钥/IP：本地旧节点 uuid=OLD，订阅返回同名节点 uuid=NEW。
+        刷新后节点数量不变、id 不变，但 uuid/address/port 已更新，分组保留。
+        """
+        old_id = manager.add_node({
+            'name': 'JMS-c56s1', 'protocol': 'vmess',
+            'address': 'old.example.com', 'port': 443,
+            'uuid': 'OLD-UUID', 'group': 'mygroup',
+        })
+        assert manager.get_node(old_id)['uuid'] == 'OLD-UUID'
+
+        from xpilot import subscription
+        monkeypatch.setattr(subscription, 'fetch', lambda url: 'fake-content')
+        monkeypatch.setattr(subscription, 'parse', lambda content: [{
+            'name': 'JMS-c56s1', 'protocol': 'vmess',
+            'address': 'new.example.com', 'port': 8443,
+            'uuid': 'NEW-UUID',
+        }])
+
+        count = manager.import_from_subscription('http://example.com/sub',
+                                                 update_existing=True)
+        assert count == 1
+        ids = manager.get_node_ids()
+        assert len(ids) == 1                      # 没有新增，仍是原来那一个
+        assert old_id in ids                      # id 不变
+        node = manager.get_node(old_id)
+        assert node['uuid'] == 'NEW-UUID'         # 连接字段被刷新
+        assert node['address'] == 'new.example.com'
+        assert node['port'] == 8443
+        assert node['group'] == 'mygroup'         # 用户态字段保留
+        assert node['name'] == 'JMS-c56s1'
+
+    def test_import_subscription_append_only_creates_duplicate(self, manager, monkeypatch):
+        """update_existing=False（默认旧行为）：同名节点会被加后缀建成新节点，原节点不刷新。
+
+        这正暴露了默认导入的缺陷——对同名节点既不刷新、也不跳过，而是不断
+        创建重复项（jms-c56s1、jms-c56s1_1、jms-c56s1_2 ...）。update_existing=True
+        既刷新密钥又避免重复堆积。
+        """
+        old_id = manager.add_node({
+            'name': 'JMS-c56s1', 'protocol': 'vmess',
+            'address': 'old.example.com', 'port': 443,
+            'uuid': 'OLD-UUID',
+        })
+        from xpilot import subscription
+        monkeypatch.setattr(subscription, 'fetch', lambda url: 'fake-content')
+        monkeypatch.setattr(subscription, 'parse', lambda content: [{
+            'name': 'JMS-c56s1', 'protocol': 'vmess',
+            'address': 'new.example.com', 'port': 8443,
+            'uuid': 'NEW-UUID',
+        }])
+        count = manager.import_from_subscription('http://example.com/sub')
+        assert count == 1                          # 新建了一个加后缀的节点
+        assert manager.get_node(old_id)['uuid'] == 'OLD-UUID'   # 原节点未被刷新
+        assert len(manager.get_node_ids()) == 2     # 现在有两个节点（重复了）
+
+    def test_import_with_source_tags_and_cleans(self, manager, monkeypatch):
+        """source 模式：导入打 source 标记，并清理该 source 下订阅不再返回的旧节点。"""
+        from xpilot import subscription
+        # source=JMS 的旧节点（订阅不再返回它，应被清理）
+        manager.add_node({'name': 'OldJMS', 'protocol': 'vmess',
+                          'address': 'old.com', 'port': 443, 'uuid': 'u1', 'source': 'JMS'})
+        # 手动节点（无 source，不应被清理）
+        manager.add_node({'name': 'Manual', 'protocol': 'vmess',
+                          'address': 'manual.com', 'port': 443, 'uuid': 'u2'})
+
+        monkeypatch.setattr(subscription, 'fetch', lambda url: 'fake')
+        monkeypatch.setattr(subscription, 'parse', lambda content: [
+            {'name': 'NewJMS1', 'protocol': 'vmess', 'address': 'n1.com', 'port': 443, 'uuid': 'n1'},
+            {'name': 'NewJMS2', 'protocol': 'vmess', 'address': 'n2.com', 'port': 443, 'uuid': 'n2'},
+        ])
+        manager.import_from_subscription('http://x', update_existing=True, source='JMS')
+
+        names = {n['name'] for n in manager.list_nodes()}
+        assert 'OldJMS' not in names               # source=JMS 且订阅不返回 → 已清理
+        assert 'NewJMS1' in names and 'NewJMS2' in names
+        assert 'Manual' in names                   # 无 source → 保留
+        new = next(n for n in manager.list_nodes() if n['name'] == 'NewJMS1')
+        assert new.get('source') == 'JMS'          # 新节点带上 source 标记
+
+    def test_import_cleanup_skipped_on_sharp_drop(self, manager, monkeypatch):
+        """骤降保护：订阅返回数 < 已有的一半时跳过清理，避免订阅故障误删。"""
+        from xpilot import subscription
+        for i in range(4):
+            manager.add_node({'name': f'JMS{i}', 'protocol': 'vmess',
+                              'address': f'h{i}.com', 'port': 443,
+                              'uuid': f'u{i}', 'source': 'JMS'})
+        # 订阅只返回 1 个（1 < 4*0.5=2）→ 触发保护
+        monkeypatch.setattr(subscription, 'fetch', lambda url: 'fake')
+        monkeypatch.setattr(subscription, 'parse', lambda content: [
+            {'name': 'JMS0', 'protocol': 'vmess', 'address': 'new.com',
+             'port': 443, 'uuid': 'new'},
+        ])
+        manager.import_from_subscription('http://x', update_existing=True, source='JMS')
+        names = {n['name'] for n in manager.list_nodes()}
+        # JMS1-3 未被清理（保护生效），JMS0 被刷新
+        assert {'JMS0', 'JMS1', 'JMS2', 'JMS3'} <= names

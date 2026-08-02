@@ -291,47 +291,86 @@ def monitor():
         sys.exit(1)
 
 
-def _probe_current_node_latency(node_manager, health_checker, node_id, timeout=3):
-    """Probe the live latency (ms) of a node for the ``status`` command.
-
-    Performs a fresh TCP probe against the node's ``address:port`` instead of
-    reading the cached ``latency`` field in ``nodes.json``, so the value
-    reflects the node's reachability right now — the same metric
-    ``start``/``restart`` use to pick the fastest node. Any failure degrades to
-    a readable label rather than raising, so a flaky or unreachable node never
-    breaks the status output.
-    """
-    if not node_id:
+def _probe_proxy_latency(health_checker, socks_port, timeout=8):
+    """经当前在跑的代理（socks 端口）访问 generate_204，返回真实流量延迟标签。"""
+    if not socks_port:
         return 'N/A'
     try:
-        node = node_manager.get_node(node_id)
-        latency = health_checker.check_latency(node, timeout=timeout)
-        if latency == float('inf'):
-            return 'timeout'
-        return f'{latency:.0f}ms'
+        ok, _code, latency_ms = health_checker._curl_through_socks(socks_port, timeout=timeout)
+        if ok and latency_ms is not None:
+            return click.style(f'{latency_ms}ms', fg='green')
+        return click.style('不通', fg='red')
     except Exception as e:
-        logger.warning(f'Latency probe failed for node {node_id}: {e}')
+        logger.warning(f'Proxy latency probe failed: {e}')
+        return 'N/A'
+
+
+def _probe_speed(health_checker, socks_port, size_bytes, timeout=30, direct=False):
+    """测下载网速，返回 Mbps 标签。direct=True 测直连，否则走指定 socks 端口。"""
+    try:
+        speed, elapsed = health_checker._curl_download(
+            socks_port, size_bytes, timeout=timeout, direct=direct)
+        if speed is not None:
+            return click.style(f'{speed:.1f} Mbps（{elapsed:.1f}s）', fg='green')
+        return click.style('测速失败', fg='red')
+    except Exception as e:
+        logger.warning(f'Speed probe failed: {e}')
+        return 'N/A'
+
+
+def _probe_direct_latency(health_checker, timeout=8):
+    """直连（不走代理）测 generate_204 延迟，返回标签（用于和经节点延迟对比）。"""
+    try:
+        latency_ms = health_checker.check_direct_latency(timeout=timeout)
+        if latency_ms is not None:
+            return click.style(f'{latency_ms}ms', fg='green')
+        return click.style('不通', fg='red')
+    except Exception as e:
+        logger.warning(f'Direct latency probe failed: {e}')
         return 'N/A'
 
 
 @cli.command()
 @click.option('-v', '--verbose', is_flag=True, help='Show detailed status')
-def status(verbose):
-    """Show proxy service status."""
-    _, node_manager, _, proxy_manager, health_checker, _ = get_managers()
+@click.option('--no-speed', is_flag=True, help='跳过网速测试（只看延迟）')
+def status(verbose, no_speed):
+    """显示代理状态（当前节点延迟、经节点网速、直连网速）。"""
+    config, node_manager, _, proxy_manager, health_checker, _ = get_managers()
+    speed_bytes = 5 * 1_000_000  # status 测速默认下载 5MB（经节点 + 直连各一次）
     try:
         info = proxy_manager.get_status()
         if info['running']:
             click.echo(click.style('Running', fg='green'))
             click.echo(f'  PID: {info["pid"]}')
             click.echo(f'  Current node: {info.get("node_name", "")} ({info["current_node"]})')
-            click.echo(f'  Latency: {_probe_current_node_latency(node_manager, health_checker, info.get("current_node"))}')
-            click.echo(f'  SOCKS port: {info.get("socks_port", "N/A")}')
+            socks_port = info.get('socks_port', 1080)
+            click.echo(f'  延迟(经节点): {_probe_proxy_latency(health_checker, socks_port)}')
+            click.echo(f'  延迟(直连): {_probe_direct_latency(health_checker)}')
+            click.echo(f'  SOCKS port: {socks_port}')
             click.echo(f'  HTTP port: {info.get("http_port", "N/A")}')
+            if not no_speed:
+                click.echo('  测速中（经节点 + 直连，各 5MB，约 10s）...')
+                click.echo(f'  经节点网速: {_probe_speed(health_checker, socks_port, speed_bytes)}')
+                click.echo(f'  直连网速: {_probe_speed(health_checker, None, speed_bytes, direct=True)}')
         else:
             click.echo(click.style('Stopped', fg='red'))
             if info.get('current_node'):
                 click.echo(f'  Last used node: {info["current_node"]}')
+            click.echo(f'  延迟(直连): {_probe_direct_latency(health_checker)}')
+            if not no_speed:
+                click.echo('  测速中（直连 5MB）...')
+                click.echo(f'  直连网速: {_probe_speed(health_checker, None, speed_bytes, direct=True)}')
+
+        # auto_switch 状态提示：关闭时当前节点失效不会自动切换到最优。
+        try:
+            auto_cfg = config.load_config('settings.json').get('auto_switch', {})
+            if not auto_cfg.get('enabled', False):
+                click.echo(click.style(
+                    '  auto_switch 未开启：当前节点失效不会自动切换到最优。'
+                    '开启： xpilot config set auto_switch.enabled true',
+                    fg='yellow'))
+        except Exception:
+            pass
     except Exception as e:
         click.echo(f'Error getting status: {e}', err=True)
         sys.exit(1)
@@ -522,14 +561,8 @@ def node_export(fmt):
 
 # ==================== Test Commands ====================
 
-@cli.command()
-@click.argument('node', required=False)
-@click.option('--all-nodes', '-a', 'test_all', is_flag=True, help='Test all nodes')
-@click.option('--current', is_flag=True, help='Test current node only')
-@click.option('--group', default=None, help='Test nodes in a group')
-def test(node, test_all, current, group):
-    """Test node connectivity and latency."""
-    setup_logging()
+def _run_connectivity_test(node, test_all, current, group, tcp_only):
+    """连通性检测（原 ``xpilot test`` 的逻辑，供 test group 无子命令时复用）。"""
     _, node_manager, _, _, health_checker, _ = get_managers()
     try:
         if test_all:
@@ -553,15 +586,121 @@ def test(node, test_all, current, group):
             click.echo('No nodes to test')
             return
 
-        click.echo(f'Testing {len(node_ids)} node(s)...')
-        results = health_checker.batch_check(node_ids)
-        results = health_checker.sort_by_latency(results)
+        if tcp_only:
+            click.echo(f'Testing {len(node_ids)} node(s) [TCP only]...')
+            results = health_checker.batch_check(node_ids)
+            results = health_checker.sort_by_latency(results)
+            for r in results:
+                ok = r.get('connected')
+                st = click.style('OK', fg='green') if ok else click.style('FAIL', fg='red')
+                latency = f'{r["latency"]}ms' if r.get('latency', -1) > 0 else 'N/A'
+                error = f'  ({r["error"]})' if r.get('error') else ''
+                click.echo(f'  {r["name"]}: {st} {latency}{error}')
+            return
 
+        # 默认：真实流量检测（并发）。
+        click.echo(f'Testing {len(node_ids)} node(s) with real traffic '
+                   f'(concurrent, may take ~15s)...')
+        results = health_checker.batch_check_real(node_ids)
+        # 可用排前、按代理延迟升序；不可用排后。
+        results.sort(key=lambda r: (not r.get('ok'), r.get('latency_ms') or float('inf')))
+
+        usable = [r for r in results if r.get('ok')]
+        default_id = node_manager.get_default_node()
         for r in results:
-            status = click.style('OK', fg='green') if r.get('connected') else click.style('FAIL', fg='red')
-            latency = f'{r["latency"]}ms' if r.get('latency', -1) > 0 else 'N/A'
-            error = f' ({r["error"]})' if r.get('error') else ''
-            click.echo(f'  {r["name"]}: {status} {latency}{error}')
+            mark = '* ' if r.get('id') == default_id else '  '
+            tcp = r.get('tcp_ms')
+            tcp_str = click.style(f'{tcp}ms', fg='green') if tcp else click.style('超时', fg='red')
+            if r.get('ok'):
+                proxy_str = click.style(
+                    f'OK ({r.get("latency_ms")}ms, http={r.get("http_code")})', fg='green')
+            else:
+                proxy_str = click.style(f'FAIL ({r.get("error") or "不通"})', fg='red')
+            click.echo(f'{mark}{r.get("name")}  [TCP {tcp_str}]  [代理 {proxy_str}]')
+
+        click.echo(f'直连延迟: {_probe_direct_latency(health_checker)}（基准，对比各节点经节点延迟）')
+        click.echo(click.style(f'\n代理可用：{len(usable)}/{len(results)}',
+                               fg='green' if usable else 'red'))
+        if not usable:
+            click.echo(click.style(
+                '全部节点代理流量不通——多为密钥/IP 过期。若有订阅源：'
+                '`xpilot subscription update`；否则先 `subscription add <url> <name>`。',
+                fg='yellow'))
+    except Exception as e:
+        click.echo(f'Error: {e}', err=True)
+        sys.exit(1)
+
+
+@cli.group(invoke_without_command=True)
+@click.option('--node', 'node', default=None, help='测试指定节点（名称或 ID）')
+@click.option('--all-nodes', '-a', 'test_all', is_flag=True, help='Test all nodes')
+@click.option('--current', is_flag=True, help='Test current node only')
+@click.option('--group', default=None, help='Test nodes in a group')
+@click.option('--tcp', 'tcp_only', is_flag=True,
+              help='仅做 TCP 快速检测（不验证代理流量是否真能出去）')
+@click.pass_context
+def test(ctx, node, test_all, current, group, tcp_only):
+    """测试节点连通性 / 网速（无参数=连通性，speed 子命令=测网速）。
+
+    不带子命令时执行连通性检测（默认真实流量，--tcp 走 TCP 快速）。
+    子命令 speed 测网速（经代理或直连）。
+    """
+    setup_logging()
+    if ctx.invoked_subcommand is None:
+        _run_connectivity_test(node, test_all, current, group, tcp_only)
+
+
+@test.command('speed')
+@click.option('--all-nodes', '-a', 'test_all', is_flag=True, help='测所有节点经代理网速')
+@click.option('--direct', is_flag=True, help='测直连网速（不走代理）')
+@click.option('--current', is_flag=True, help='测当前节点经代理网速')
+@click.option('--size', default=10, type=int, help='每次下载大小（MB，默认 10）')
+def test_speed(test_all, direct, current, size):
+    """测网速：经代理下载或直连下载（Cloudflare 测速端点）。"""
+    setup_logging()
+    _, node_manager, _, _, health_checker, _ = get_managers()
+    size_bytes = size * 1_000_000
+    try:
+        if direct:
+            click.echo(f'测直连网速（不走代理，下载 {size}MB）...')
+            r = health_checker.check_direct_speed(size_bytes=size_bytes)
+            if r['speed_mbps'] is not None:
+                click.echo(click.style(
+                    f'  直连: {r["speed_mbps"]:.1f} Mbps（用时 {r["elapsed"]:.1f}s）',
+                    fg='green'))
+            else:
+                click.echo(click.style(f'  直连测速失败: {r["error"]}', fg='red'))
+            return
+
+        if test_all:
+            node_ids = node_manager.get_node_ids()
+        elif current:
+            default = node_manager.get_default_node()
+            if not default:
+                click.echo('No default node set')
+                sys.exit(1)
+            node_ids = [default]
+        else:
+            click.echo('Specify --all-nodes, --current, or --direct')
+            return
+        if not node_ids:
+            click.echo('No nodes to test')
+            return
+
+        click.echo(f'测 {len(node_ids)} 个节点经代理网速（每节点下载 {size}MB，并发）...')
+        results = health_checker.batch_check_speed(node_ids, size_bytes=size_bytes)
+        # 速度快的排前面，测速失败的排后面。
+        results.sort(key=lambda r: (r.get('speed_mbps') is None,
+                                    -(r.get('speed_mbps') or 0)))
+        default_id = node_manager.get_default_node()
+        for r in results:
+            mark = '* ' if r.get('id') == default_id else '  '
+            if r.get('speed_mbps') is not None:
+                spd = click.style(f'{r["speed_mbps"]:6.1f} Mbps', fg='green')
+                click.echo(f'{mark}{r.get("name")}  {spd}  ({r["elapsed"]:.1f}s)')
+            else:
+                click.echo(f'{mark}{r.get("name")}  {click.style("FAIL", fg="red")}'
+                           f'  ({r.get("error")})')
     except Exception as e:
         click.echo(f'Error: {e}', err=True)
         sys.exit(1)
@@ -764,8 +903,10 @@ def subscription_update(name):
         for sub_name, url in subs.items():
             click.echo(f'Updating {sub_name}...')
             try:
-                count = node_manager.import_from_subscription(url)
-                click.echo(f'  Imported {count} nodes from {sub_name}')
+                # update 语义：按名字刷新已有节点的连接字段（密钥/IP 轮换后真正生效），
+                # 同时导入新增节点。仅追加新节点请用 `node import`。
+                count = node_manager.import_from_subscription(url, update_existing=True, source=sub_name)
+                click.echo(f'  Refreshed {count} nodes from {sub_name}')
             except Exception as e:
                 click.echo(f'  Failed: {e}', err=True)
     except Exception as e:

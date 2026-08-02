@@ -110,7 +110,7 @@ class TestConfig:
         """测试：使用点符号路径读取顶层和嵌套配置值，不存在时返回默认值。"""
         config.init_default_configs()
         assert config.get_setting('socks_port') == 1080
-        assert config.get_setting('auto_switch.enabled') is False
+        assert config.get_setting('auto_switch.enabled') is True
         assert config.get_setting('nonexistent', 'default') == 'default'
 
     def test_set_setting(self, config):

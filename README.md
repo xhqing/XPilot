@@ -22,7 +22,7 @@ A Python command-line framework that makes [Xray](https://github.com/XTLS/Xray-c
 
 - Supports VMess, VLESS, Trojan, and Shadowsocks protocols
 - Smart node health detection (latency / connectivity)
-- Automatic node switching (based on a latency threshold)
+- Automatic switching to the lowest-latency usable node (real-traffic based)
 - Subscription auto-import (Base64 / JSON / Clash formats)
 - macOS system proxy integration
 - Flexible routing rule management (proxy / direct / block)
@@ -210,16 +210,16 @@ xpilot restart
 
 #### `status` - Show proxy status
 
-Shows whether the proxy is running, the current node, ports, and so on.
+Shows whether the proxy is running, the current node, ports, and the current node's real-traffic latency next to a direct-connection latency for comparison. By default it also measures download speed through the node and the direct (no-proxy) speed.
 
 ```bash
 xpilot status
 ```
 
-Show detailed information:
+Skip the speed test (latency only, returns instantly):
 
 ```bash
-xpilot status -v
+xpilot status --no-speed
 ```
 
 ---
@@ -417,12 +417,12 @@ xpilot node export -f yaml
 
 #### `test` - Test node connectivity
 
-Tests a node's latency and connectivity.
+By default, performs a **real-traffic** check: spins up a temporary xray instance per node and requests `generate_204` through it, so the result reflects whether the node can actually proxy traffic — not just whether TCP reaches the server. This catches the common failure where TCP connects but the proxy is unusable (expired credentials, protocol handshake failure). Output shows both TCP reachability and proxy availability.
 
 Test a specific node:
 
 ```bash
-xpilot test my_node
+xpilot test --node my_node
 ```
 
 Test all nodes:
@@ -447,6 +447,35 @@ Test all nodes in a specific group:
 
 ```bash
 xpilot test --group work
+```
+
+Fast TCP-only check (no real-traffic probe, returns in seconds):
+
+```bash
+xpilot test --all-nodes --tcp
+```
+
+#### `test speed` - Test download speed
+
+Measures download speed via the Cloudflare `__down` endpoint (default 10 MB per node). `--all-nodes` tests every node's proxy speed concurrently; `--direct` tests direct (no-proxy) speed; `--current` tests only the default node.
+
+Test speed through all nodes (concurrent):
+
+```bash
+xpilot test speed --all-nodes
+```
+
+Test direct (no-proxy) speed:
+
+```bash
+xpilot test speed --direct
+```
+
+Test the current node's proxy speed, or change the download size (MB):
+
+```bash
+xpilot test speed --current
+xpilot test speed --all-nodes --size 20
 ```
 
 ---
@@ -601,7 +630,7 @@ xpilot subscription add "https://example.com/subscription" --name "My Subscripti
 
 #### `subscription update` - Update subscriptions
 
-Imports nodes from saved subscription sources.
+Refreshes nodes from saved subscription sources: matches existing nodes by name and overwrites their connection fields (address, port, UUID, password, cipher, etc.) with the latest from the subscription, while preserving IDs, groups, and custom names; new nodes are also imported. Use `node import` to append without refreshing existing nodes.
 
 Update all subscription sources:
 
@@ -671,10 +700,10 @@ Enable auto-switching:
 xpilot config set auto_switch.enabled true
 ```
 
-Change the auto-switch threshold:
+Tune the switch hysteresis (only switch to a better node if it's at least this much faster; 0 = always switch to the lowest-latency node, which is the default):
 
 ```bash
-xpilot config set auto_switch.threshold 300
+xpilot config set auto_switch.hysteresis 0.2
 ```
 
 Enable the system proxy:
@@ -736,10 +765,10 @@ xpilot config show          # Show current configuration
   "log_level": "warning",
   "log_file": "/tmp/xpilot.log",
   "auto_switch": {
-    "enabled": false,
+    "enabled": true,
     "interval": 300,
     "strategy": "latency",
-    "threshold": 200
+    "hysteresis": 0
   },
   "watchdog": {
     "enabled": true,
@@ -758,7 +787,7 @@ xpilot config show          # Show current configuration
 }
 ```
 
-> **watchdog vs auto_switch**: `watchdog` is on by default and restarts the xray process if it exits unexpectedly (keep-alive), independent of whether `auto_switch` is enabled; `auto_switch` is off by default and switches to a faster node when the current node's latency exceeds the threshold. The two are independent and can be toggled separately.
+> **watchdog vs auto_switch**: `watchdog` is on by default and restarts the xray process if it exits unexpectedly (keep-alive), independent of whether `auto_switch` is enabled; `auto_switch` is on by default and picks the **lowest-latency usable node** (measured by real traffic) every interval — if the best node isn't the current one, it switches; `hysteresis` avoids flapping between nodes with similar latency. When all nodes are unreachable, it refreshes the subscription (by node name). The two are independent and can be toggled separately.
 
 ## Logs
 

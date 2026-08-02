@@ -4,6 +4,34 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-08-02
+
+### 新增
+
+- `test` 命令默认改用真实流量检测：为每个节点起临时 xray 实例（独立 socks 端口、仅绑 127.0.0.1），经它访问 `generate_204`，把「TCP 可达」与「代理可用」分开判定——解决此前只测 TCP 握手、导致「TCP 通但代理流量不通」（密钥失效、协议握手失败、对端无法出网）被误判为可用的问题。输出分 TCP 与代理两列；新增 `--tcp` 保留秒级 TCP-only 快速检测。为此在 `xpilot/health_checker.py` 新增 `check_real_traffic`（单节点）、`batch_check_real`（并发批量）、`_curl_through_socks`（走 socks5h 实测，避免本地 DNS 污染误判）、`_find_free_port`、`_kill_proc`。
+- `auto_switch` 重设计为「主动选优」：每 interval 秒对全部节点做真实流量检测，在能用的节点中选延迟最低的为最优，最优不是当前节点就切换（不再是「当前不通才切」的兜底）。`hysteresis`（迟滞比例，默认 0）可防止节点延迟接近时来回抖动；当前节点不可用时无视迟滞直接切到最优；全部节点不通时自动拉订阅按名字刷新（带 cooldown 退避）后重测并切换。配置项 `threshold` 由 `hysteresis` 取代。为此在 `xpilot/auto_switch.py` 重写 `_check_and_switch`，新增 `_try_refresh_subscription`（带退避的订阅刷新）、`_switch_to`（切换逻辑，`manual_switch` 复用）、`_log_usable_status`（可用节点不足时记录日志）。
+- 订阅导入支持按名字刷新：`NodeManager.import_from_subscription` 新增 `update_existing` 参数，为 True 时按节点名匹配已有节点并覆盖其连接字段（地址、端口、UUID、密码、加密方式、传输、TLS、SNI），保留 id、分组与自定义名——机场轮换密钥或 IP 后能真正刷新同名节点，而非像旧逻辑那样加后缀创建重复项（`jms-c56s1` → `jms-c56s1_1`）。新增 `SUBSCRIPTION_REFRESH_FIELDS` 常量与 `_refresh_node_fields` 方法。
+- `status` 命令在 `auto_switch` 未开启时给出醒目提示，提醒当前节点失效时不会自动切换。
+- VLESS+Reality 协议支持：`_parse_vless_link` 解析 reality 参数（`pbk` 公钥、`sid` 短 ID、`fp` 指纹、`flow` 流控）并对 fragment 节点名做 URL 解码（修复订阅导入后节点名出现 `%40` `%3A` 等乱码）；`ProxyManager._generate_outbound` 为 reality 节点生成 `realitySettings`、把 flow（如 `xtls-rprx-vision`）写到 vless user；`NodeManager` 的存储字段白名单（`add_node` / `update_node` / 订阅刷新字段）纳入 reality 字段。
+- 订阅节点自动清理与 source 标记：`import_from_subscription` 新增 `source` 参数，给导入/刷新的节点打订阅源标记（如 `source: 'JMS'`），并自动清理该订阅下「订阅不再返回」的旧节点——订阅改名（如 `JMS-c56s1` → `JMS-1336028@c56s1`）或移除节点时，失效旧节点会被自动清掉，本地始终保持订阅返回的最新节点集。带骤降保护（返回数 < 已有的 50% 时跳过清理，避免订阅临时故障误删）。手动 `node add` 的节点无 source、永不参与清理。`subscription update` 与 auto_switch 自动刷新均启用此模式。
+- 可用节点数异常监控：auto_switch 每次真实流量检测后，若可用节点少于总数，记录 warning 日志列出不通节点名与可能原因（写入 `log_file`，默认 `/tmp/xpilot.log`）；订阅导入后若该 source 节点数与订阅返回数不符，同样记录原因（含新增/刷新/失败/清理计数），让用户知道「为什么可用节点少了」。
+- `xpilot test speed` 网速测试：经代理或直连下载 Cloudflare `__down` 端点的固定大小文件（默认 10MB）测速率。`--all-nodes` 并发测所有节点经代理网速，`--direct` 测直连网速（不走代理），`--current` 测当前节点，`--size` 调下载大小。为此在 `xpilot/health_checker.py` 抽出 `_start_probe`（临时 xray 探测的公共逻辑，连通性检测与测速复用），新增 `check_speed` / `check_direct_speed` / `batch_check_speed` / `_curl_download`。
+- `test` 命令改为 group（`invoke_without_command` 兼容原有 `xpilot test --all-nodes` / `--tcp` / `--current` / `--group`），以承载 `speed` 子命令。**不兼容变更**：单节点测试由 positional 参数（`xpilot test my_node`）改为 `--node` 选项（`xpilot test --node my_node`），因 group 的 positional 会与子命令名冲突。
+- `status` 命令默认展示当前节点的真实流量延迟、经节点网速、直连网速三项指标（经当前在跑的代理与直连各下载 5MB 测速）；新增 `--no-speed` 选项跳过测速只看延迟。
+- 延迟对比：凡显示「经节点延迟」处都配套显示「直连延迟」——`status` 并排展示经节点延迟与直连延迟；`test` 连通性汇总显示直连延迟基准，用于和各节点经节点延迟对比。新增 `HealthChecker.check_direct_latency`（直连访问 generate_204，墙内自动回退 cloudflare 端点）。
+- 新增单元测试：订阅按名字刷新与默认追加行为对比、source 自动清理与骤降保护（`tests/test_node_manager.py`）、真实流量检测失败路径与端口探测（`tests/test_health_checker.py`）、auto_switch 真实流量切换决策与订阅刷新退避（`tests/test_auto_switch.py`）、VLESS+Reality 解析与出站配置生成（`tests/test_subscription.py`、`tests/test_proxy_manager.py`）。
+
+### 变更
+
+- `subscription update` 命令由「只追加新节点」改为「按名字刷新已有节点 + 导入新增节点」，符合 update 语义；仅追加新节点请用 `node import`。
+- `xpilot/config.py` 默认 settings 的 `auto_switch` 新增 `auto_update_subscription`（默认 True）与 `subscription_refresh_cooldown`（默认 3600）两项配置。
+- `auto_switch.enabled` 默认值由 False 改为 True——新装或 `xpilot init` 重置即开箱启用真实流量自动切换，无需手动 `config set`。
+
+### 修复
+
+- `subscription.fetch` 改用 `trust_env=False` 的 session 强制直连，绕过环境变量与 macOS 系统代理。此前 `xpilot start` 会把系统代理指向本地 xray，当代理本身故障时，拉订阅的请求也被坏代理截断，陷入「代理坏 → 拉不到订阅 → 无法恢复代理」的死循环。
+- `_parse_ss_link` 重写为手动切分解析，修复 SIP002 格式（`ss://base64(method:password)@host:port#name`）SS 链接解析失败的问题：userinfo 里的 base64 字符（`+` `/` `=`）会让 urlparse 把 userinfo 误当成 hostname/port，导致 SS 节点无法解析、订阅更新时被静默跳过（旧节点因此长期得不到刷新）。新增 `_b64decode_loose` 兼容 websafe base64。
+
 ## [0.3.0] - 2026-07-31
 
 ### 新增

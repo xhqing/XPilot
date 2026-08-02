@@ -22,7 +22,7 @@
 
 - 支持 VMess、VLESS、Trojan、Shadowsocks 协议
 - 智能节点健康检测（延迟/连通性）
-- 自动节点切换（基于延迟阈值）
+- 自动切换到延迟最低的可用节点（基于真实流量）
 - 订阅自动导入（Base64/JSON/Clash 格式）
 - macOS 系统代理集成
 - 灵活的路由规则管理（代理/直连/拦截）
@@ -210,16 +210,16 @@ xpilot restart
 
 #### `status` - 查看代理状态
 
-显示代理是否运行、当前节点、端口等信息。
+显示代理是否运行、当前节点、端口、当前节点的真实流量延迟（与直连延迟并排对比）。默认还会测经节点网速和直连网速。
 
 ```bash
 xpilot status
 ```
 
-显示详细信息：
+跳过网速测试（只看延迟，秒回）：
 
 ```bash
-xpilot status -v
+xpilot status --no-speed
 ```
 
 ---
@@ -417,12 +417,12 @@ xpilot node export -f yaml
 
 #### `test` - 测试节点连通性
 
-测试节点的延迟和连通性。
+默认执行**真实流量**检测：为每个节点临时起一个 xray 实例，经它访问 `generate_204`，结果反映节点是否真能代理流量，而不只是 TCP 能否连到服务器。这能揪出「TCP 通但代理不可用」（密钥失效、协议握手失败）这类常见故障。输出同时展示 TCP 可达性与代理可用性。
 
 测试指定节点：
 
 ```bash
-xpilot test my_node
+xpilot test --node my_node
 ```
 
 测试所有节点：
@@ -447,6 +447,35 @@ xpilot test --current
 
 ```bash
 xpilot test --group work
+```
+
+仅做快速 TCP 检测（不起临时 xray、不走真实流量，秒级返回）：
+
+```bash
+xpilot test --all-nodes --tcp
+```
+
+#### `test speed` - 测试网速
+
+经 Cloudflare `__down` 端点下载固定大小文件（默认每节点 10MB）测速率。`--all-nodes` 并发测所有节点经代理网速，`--direct` 测直连网速（不走代理），`--current` 测当前节点。
+
+测所有节点经代理网速（并发）：
+
+```bash
+xpilot test speed --all-nodes
+```
+
+测直连网速：
+
+```bash
+xpilot test speed --direct
+```
+
+测当前节点网速，或调整下载大小（MB）：
+
+```bash
+xpilot test speed --current
+xpilot test speed --all-nodes --size 20
 ```
 
 ---
@@ -601,7 +630,7 @@ xpilot subscription add "https://example.com/subscription" --name "My Subscripti
 
 #### `subscription update` - 更新订阅
 
-从已保存的订阅源导入节点。
+从已保存的订阅源刷新节点：按节点名匹配已有节点，用订阅里的最新连接字段（地址、端口、UUID、密码、加密方式等）覆盖旧值，保留 id、分组与自定义名；同时导入新增节点。仅追加、不刷新已有节点请用 `node import`。
 
 更新所有订阅源：
 
@@ -671,10 +700,10 @@ xpilot config set socks_port 7890
 xpilot config set auto_switch.enabled true
 ```
 
-修改自动切换阈值：
+调整切换迟滞（仅当更优节点比当前快该比例以上才切换；0 = 总是切到延迟最低的节点，即默认）：
 
 ```bash
-xpilot config set auto_switch.threshold 300
+xpilot config set auto_switch.hysteresis 0.2
 ```
 
 启用系统代理：
@@ -736,10 +765,10 @@ xpilot config show          # 查看当前配置
   "log_level": "warning",
   "log_file": "/tmp/xpilot.log",
   "auto_switch": {
-    "enabled": false,
+    "enabled": true,
     "interval": 300,
     "strategy": "latency",
-    "threshold": 200
+    "hysteresis": 0
   },
   "watchdog": {
     "enabled": true,
@@ -758,7 +787,7 @@ xpilot config show          # 查看当前配置
 }
 ```
 
-> **watchdog 与 auto_switch 的区别**：`watchdog` 默认开启，负责在 xray 进程意外退出时自动重新拉起（保活），与是否启用 `auto_switch` 无关；`auto_switch` 默认关闭，负责在当前节点延迟超过阈值时自动切换到更快的节点。两者相互独立，可单独开关。
+> **watchdog 与 auto_switch 的区别**：`watchdog` 默认开启，负责在 xray 进程意外退出时自动重新拉起（保活），与是否启用 `auto_switch` 无关；`auto_switch` 默认开启，每 interval 秒在所有真实流量可用的节点中选**延迟最低**的，最优不是当前节点就切换（`hysteresis` 可防止两个节点延迟接近时来回抖动），全部节点不通时自动拉取订阅按名字刷新。两者相互独立，可单独开关。
 
 ## 运行日志
 

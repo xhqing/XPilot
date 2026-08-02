@@ -307,14 +307,15 @@ class ProxyManager:
                 }]
             }
         elif protocol == 'vless':
+            user = {'id': node.get('uuid', ''), 'encryption': 'none'}
+            # flow（如 xtls-rprx-vision）用于 VLESS+Reality / XTLS，属 user 级。
+            if node.get('flow'):
+                user['flow'] = node['flow']
             settings = {
                 'vnext': [{
                     'address': node['address'],
                     'port': node['port'],
-                    'users': [{
-                        'id': node.get('uuid', ''),
-                        'encryption': 'none',
-                    }]
+                    'users': [user]
                 }]
             }
         elif protocol == 'trojan':
@@ -346,9 +347,23 @@ class ProxyManager:
             'tag': tag,
         }
 
-        # Stream settings for TLS
-        if node.get('tls', False) or protocol == 'trojan':
-            stream = {
+        # Stream settings：Reality 优先于普通 TLS。
+        security = node.get('security', 'none')
+        if security == 'reality':
+            outbound['streamSettings'] = {
+                'network': node.get('network', 'tcp'),
+                'security': 'reality',
+                'realitySettings': {
+                    'serverName': node.get('servername', node['address']),
+                    'fingerprint': node.get('fingerprint') or 'chrome',
+                    'publicKey': node.get('reality_public_key', ''),
+                    'shortId': node.get('reality_short_id', ''),
+                    'spiderX': '',
+                    'show': False,
+                }
+            }
+        elif node.get('tls', False) or protocol == 'trojan':
+            outbound['streamSettings'] = {
                 'network': node.get('network', 'tcp'),
                 'security': 'tls',
                 'tlsSettings': {
@@ -356,7 +371,6 @@ class ProxyManager:
                     'allowInsecure': False,
                 }
             }
-            outbound['streamSettings'] = stream
 
         return outbound
 

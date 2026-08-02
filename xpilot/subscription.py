@@ -5,6 +5,8 @@ import json
 import logging
 import re
 
+from . import __version__
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,12 +16,21 @@ class SubscriptionError(Exception):
 
 
 def fetch(url: str) -> str:
-    """Fetch subscription content from URL."""
+    """Fetch subscription content from URL.
+
+    强制直连、不走任何代理。订阅更新最常发生在「代理已坏、需要恢复」时，
+    若 requests 走系统代理（xpilot start 会把 macOS 系统代理指向本地 xray），
+    会陷入「代理坏 → 拉不到订阅 → 无法恢复代理」的死循环。用 trust_env=False
+    的 session 忽略环境变量与 macOS 系统代理配置，确保订阅分发域名直连可达。
+    """
     import requests
+    session = requests.Session()
+    session.trust_env = False  # 忽略 HTTP_PROXY/HTTPS_PROXY 及 macOS 系统代理
     try:
-        resp = requests.get(url, timeout=30, headers={
-            'User-Agent': 'xpilot/0.1.0'
-        })
+        resp = session.get(
+            url, timeout=30,
+            headers={'User-Agent': f'xpilot/{__version__}'},
+        )
         resp.raise_for_status()
         return resp.text
     except requests.RequestException as e:
@@ -155,23 +166,30 @@ def _parse_vmess_link(link: str) -> dict:
 
 
 def _parse_vless_link(link: str) -> dict:
-    """Parse VLESS share link."""
+    """Parse VLESS share link（含 VLESS+Reality 参数）。"""
     try:
         # vless://uuid@host:port?params#name
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import urlparse, parse_qs, unquote
         parsed = urlparse(link)
         params = parse_qs(parsed.query)
+        security = params.get('security', ['none'])[0]
 
         return {
-            'name': parsed.fragment or 'Unknown',
+            # fragment 不被 parse_qs 处理，需手动 unquote 解码 %40 %3A 等。
+            'name': unquote(parsed.fragment) or 'Unknown',
             'protocol': 'vless',
             'address': parsed.hostname,
             'port': parsed.port,
             'uuid': parsed.username,
-            'security': params.get('security', ['none'])[0],
+            'security': security,
             'network': params.get('type', ['tcp'])[0],
-            'tls': params.get('security', ['none'])[0] != 'none',
+            'tls': security not in ('none', ''),
             'servername': params.get('sni', [''])[0],
+            # Reality 专用字段（仅 security=reality 时有意义）
+            'reality_public_key': params.get('pbk', [None])[0],
+            'reality_short_id': params.get('sid', [None])[0],
+            'fingerprint': params.get('fp', [None])[0],
+            'flow': params.get('flow', [None])[0],
         }
     except Exception:
         return None
@@ -197,32 +215,56 @@ def _parse_trojan_link(link: str) -> dict:
         return None
 
 
+def _b64decode_loose(s: str) -> str:
+    """容错的 base64 解码：兼容 websafe（用 - _ 替代 + /）并自动补齐 padding。"""
+    s = s.replace('-', '+').replace('_', '/')
+    pad = len(s) % 4
+    if pad:
+        s += '=' * (4 - pad)
+    return base64.b64decode(s).decode('utf-8', errors='ignore')
+
+
 def _parse_ss_link(link: str) -> dict:
-    """Parse Shadowsocks share link."""
+    """Parse Shadowsocks share link.
+
+    支持两种格式：
+    - SIP002（机场最常用）：``ss://base64(method:password)@host:port#name``。
+      userinfo 是 websafe base64，其中 + / = 等字符会让 urlparse 误把 userinfo
+      当成 hostname/port，故改为手动按 ``@`` 与 ``:`` 切分。
+    - 旧式整体编码：``ss://base64(method:password@host:port)#name``（无明文 @）。
+    """
+    from urllib.parse import unquote
     try:
-        from urllib.parse import urlparse
-        # ss://method:password@host:port#name
-        # Or ss://base64(method:password)@host:port#name
-        parsed = urlparse(link)
-        user_info = parsed.username + ('.' if parsed.password else '') + (parsed.password or '')
+        body = link[len('ss://'):]
+        name = 'Unknown'
+        if '#' in body:
+            body, name_part = body.split('#', 1)
+            name = unquote(name_part) or 'Unknown'
+        body = body.split('?', 1)[0]  # 去掉 ?plugin=... 等查询串
 
-        # Try base64 decode
-        try:
-            decoded = base64.b64decode(user_info).decode('utf-8')
-            method, password = decoded.split(':', 1)
-        except Exception:
-            method = parsed.username
-            password = parsed.password or ''
+        if '@' in body:
+            # SIP002: base64(method:password)@host:port
+            userinfo_b64, hostport = body.rsplit('@', 1)
+            method_password = _b64decode_loose(userinfo_b64)
+            host, port = hostport.rsplit(':', 1)
+        else:
+            # 旧式: base64(method:password@host:port)
+            decoded = _b64decode_loose(body)
+            userinfo, hostport = decoded.rsplit('@', 1)
+            method_password = userinfo
+            host, port = hostport.rsplit(':', 1)
 
+        method, _, password = method_password.partition(':')
         return {
-            'name': parsed.fragment or 'Unknown',
+            'name': name,
             'protocol': 'ss',
-            'address': parsed.hostname,
-            'port': parsed.port,
+            'address': host,
+            'port': int(port),
             'password': password,
             'security': method,
         }
-    except Exception:
+    except Exception as e:
+        logger.debug(f'Failed to parse ss link: {e}')
         return None
 
 
