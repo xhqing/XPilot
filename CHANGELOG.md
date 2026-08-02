@@ -4,6 +4,17 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- `auto_switch` 新增选优策略 `strategy`（默认 `latency`，行为不变）：`hybrid` 排除经节点延迟超过 `latency_threshold_ms`（默认 1500ms）的节点后，在剩余节点里按带宽降序选最优——带宽主导、延迟兜底；`speed` 为纯带宽（延迟不参与）。**为什么**：原纯延迟选优会把「延迟尚可、带宽极差」的假优节点（实测 219ms/0.5Mbps 的节点）当最优切过去，YouTube 等视频场景必卡；延迟与带宽无相关性（实测最优延迟节点的带宽垫底）。带宽数据用缓存（`speed_cache_ttl` 默认 1 小时整组重测、`speed_test_size` 默认 5MB），避免每轮测速烧套餐流量；5MB 是实测收敛点——2MB 对快节点只有 0.6s 下载窗口、TCP 慢启动未到峰、严重低估（27Mbps 节点测成 0.4Mbps），5MB 以上才稳定区分档位。`hysteresis` 在 hybrid/speed 下语义变为带宽比例（当前带宽 ≥ 最优带宽的 (1-hysteresis) 时不切，防抖）。为此在 `xpilot/auto_switch.py` 新增 `_pick_best`（按策略选优，hybrid 全超限时回退全部「宁可慢不可断」）、`_refresh_speed_cache`（带宽缓存整组刷新，失败不阻塞选优）、`_sort_by_speed`（带宽降序、缺失排最后、同带宽按延迟兜底）、`_fmt_speed`。
+- `status` 命令默认不再测延迟与网速（原来每次 status 要下载 10MB 测速、等 10-20 秒）：只显示运行状态、PID、当前节点、端口，以及「当前节点连通性」——经当前在跑的代理访问 `generate_204`，通即报 OK、不通报 FAIL，几秒内返回。`-v/--verbose` 才额外显示经节点与直连延迟；`--no-speed` 选项废弃（保留声明、隐藏，无效果）。
+
+### 变更
+
+- `xpilot/config.py` 默认 settings 的 `auto_switch` 新增 `strategy`（默认 `latency`）、`latency_threshold_ms`（1500）、`speed_cache_ttl`（3600）、`speed_test_size`（5000000）四项配置；原文档语义随策略扩展。
+
 ## [0.4.0] - 2026-08-02
 
 ### 新增

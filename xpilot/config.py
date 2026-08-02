@@ -112,9 +112,25 @@ class Config:
             'auto_switch': {
                 'enabled': True,
                 'interval': 300,
+                # 选优策略：latency=纯延迟最低（默认，保守）/ hybrid=带宽主导、
+                # 延迟兜底（排除延迟超限节点后按带宽选，兼顾视频流畅与交互体验）/
+                # speed=纯带宽最优（延迟完全不参与，可能选到高带宽高延迟节点）。
                 'strategy': 'latency',
+                # hybrid 模式：经节点延迟超过该值（毫秒）的节点直接排除——
+                # 超过该量级的延迟连视频拖动都会崩溃，带宽再高也无意义。
+                'latency_threshold_ms': 1500,
+                # 带宽测速缓存有效期（秒）：hybrid/speed 模式下全节点测速的间隔。
+                # 带宽抖动大（深夜限速 / 高峰拥堵），无需每轮（interval）都测，
+                # 避免频繁下载烧套餐流量。
+                'speed_cache_ttl': 3600,
+                # 带宽测速下载大小（字节）：5MB 才能在快节点上越过 TCP 慢启动
+                # 收敛到真实带宽（2MB 对 27Mbps 节点只有 0.6s 窗口、严重低估），
+                # 也比 CLI 测速默认的 10MB 省流量。
+                'speed_test_size': 5000000,
                 # 切换迟滞比例：最优节点延迟需比当前低该比例以上才切换，防抖；
                 # 0 = 最优不是当前就切（默认，最积极选优）。
+                # hybrid/speed 模式下语义变为带宽比例：当前带宽 >= 最优带宽的
+                # (1-hysteresis) 时不切。
                 'hysteresis': 0,
                 # 所有节点真实流量都不通时，自动拉订阅按名字刷新已有节点的连接字段。
                 'auto_update_subscription': True,

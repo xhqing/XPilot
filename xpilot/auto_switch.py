@@ -38,6 +38,19 @@ class AutoSwitch:
         self._last_auto_switch = 0.0
         # 订阅自动刷新的退避时间戳：全节点失效时拉订阅，cooldown 内不重复。
         self._last_sub_refresh = 0.0
+        # 选优策略（populated in start()）：
+        #   latency  -- 纯延迟最低（现状）
+        #   hybrid   -- 排除延迟超限节点后按带宽选（推荐，带宽主导、延迟兜底）
+        #   speed    -- 纯带宽最优
+        self._strategy = 'latency'
+        # hybrid：经节点延迟超过该值(ms)的节点排除。
+        self._latency_threshold_ms = 1500
+        # 带宽测速缓存有效期（秒）与测速下载大小（字节）。
+        self._speed_cache_ttl = 1800
+        self._speed_test_size = 2000000
+        # 带宽缓存：node_id -> {speed_mbps, ts}；全组到 ttl 后整组重测。
+        self._speed_cache = {}
+        self._last_speed_test = 0.0
 
     def start(self) -> None:
         """Start monitoring (watchdog and/or auto-switch).
@@ -64,6 +77,15 @@ class AutoSwitch:
 
         self._auto_switch_interval = auto_switch_cfg.get('interval', 300)
         self._watchdog_interval = watchdog_cfg.get('interval', 30)
+
+        strategy = auto_switch_cfg.get('strategy', 'latency')
+        if strategy not in ('latency', 'hybrid', 'speed'):
+            logger.warning(f'未知选优策略 {strategy!r}，回退到 latency')
+            strategy = 'latency'
+        self._strategy = strategy
+        self._latency_threshold_ms = auto_switch_cfg.get('latency_threshold_ms', 1500)
+        self._speed_cache_ttl = auto_switch_cfg.get('speed_cache_ttl', 1800)
+        self._speed_test_size = auto_switch_cfg.get('speed_test_size', 2000000)
 
         # The loop tick is the shorter interval so each subsystem can still
         # honour its own (longer) schedule.
@@ -195,14 +217,16 @@ class AutoSwitch:
                 logger.error('刷新订阅后仍无可用节点')
                 return
 
-        best = usable[0]
+        best = self._pick_best(usable)
         current_node = self.node_manager.get_default_node()
         if best['id'] == current_node:
             return  # 当前已是最优节点
 
         # 最优不是当前节点。hysteresis（默认 0 = 最优不是当前就切）大于 0 时，
-        # 仅当最优延迟比当前低 hysteresis 比例以上才切，防止延迟接近时来回抖动；
+        # 仅当最优比当前好 hysteresis 比例以上才切，防止接近时来回抖动；
         # 当前节点不可用时无视迟滞直接切到最优。
+        # latency 策略按延迟比例；hybrid/speed 策略按带宽比例（当前带宽 >=
+        # 最优带宽的 (1-hysteresis) 时不切）。
         current_result = (next((r for r in results if r['id'] == current_node), None)
                           if current_node else None)
         if not current_result or not current_result.get('ok'):
@@ -210,10 +234,20 @@ class AutoSwitch:
         else:
             cur_lat = current_result.get('latency_ms') or float('inf')
             best_lat = best.get('latency_ms') or float('inf')
-            if (hysteresis > 0 and cur_lat != float('inf')
-                    and best_lat >= cur_lat * (1 - hysteresis)):
-                return  # 最优在迟滞范围内，保持当前避免抖动
-            reason = (f'最优 {best["name"]} {best_lat}ms 快于当前 {current_node} {cur_lat}ms')
+            if self._strategy == 'latency':
+                if (hysteresis > 0 and cur_lat != float('inf')
+                        and best_lat >= cur_lat * (1 - hysteresis)):
+                    return  # 最优在迟滞范围内，保持当前避免抖动
+                reason = (f'最优 {best["name"]} {best_lat}ms 快于当前 '
+                          f'{current_node} {cur_lat}ms')
+            else:
+                cur_speed = self._speed_cache.get(current_node, {}).get('speed_mbps')
+                best_speed = self._speed_cache.get(best['id'], {}).get('speed_mbps')
+                if (hysteresis > 0 and cur_speed is not None and best_speed
+                        and cur_speed >= best_speed * (1 - hysteresis)):
+                    return  # 当前带宽在迟滞范围内，保持当前避免抖动
+                reason = (f'最优 {best["name"]} {best_lat}ms/{self._fmt_speed(best_speed)} '
+                          f'优于当前 {current_node} {cur_lat}ms/{self._fmt_speed(cur_speed)}')
         logger.info(f'Auto switching from {current_node} to {best["id"]}：'
                     f'{reason}；目标延迟 {best.get("latency_ms")}ms')
         self._switch_to(best['id'])
@@ -222,6 +256,74 @@ class AutoSwitch:
     def _sort_usable(usable: list) -> list:
         """真实流量可用的节点按延迟升序排列，延迟缺失的排后面。"""
         return sorted(usable, key=lambda r: r.get('latency_ms') or float('inf'))
+
+    def _pick_best(self, usable: list) -> dict:
+        """按 strategy 从真实流量可用的节点里选最优。
+
+        latency：延迟最低（_sort_usable 已按延迟排序，取第一个）。
+        hybrid：先排除经节点延迟超过 latency_threshold_ms 的节点——延迟差到
+            视频拖动都会崩溃的，带宽再高也无意义；全部超限时回退全部
+            （宁可慢、不可断），再按带宽降序选。
+        speed：纯按带宽降序选（延迟不参与）。
+        """
+        if self._strategy == 'latency':
+            return self._sort_usable(usable)[0]
+
+        if self._strategy == 'hybrid':
+            threshold = self._latency_threshold_ms
+            filtered = [r for r in usable
+                        if (r.get('latency_ms') or float('inf')) <= threshold]
+            if not filtered:
+                logger.warning(
+                    f'hybrid：全部可用节点延迟均超过 {threshold}ms，回退按延迟选')
+                filtered = usable
+            usable = filtered
+
+        # hybrid / speed 需要带宽数据：缓存过期则整组重测一次。
+        node_ids = [r['id'] for r in usable]
+        self._refresh_speed_cache(node_ids)
+        return self._sort_by_speed(usable)[0]
+
+    def _refresh_speed_cache(self, node_ids: list) -> None:
+        """带宽缓存过期时并发测速刷新（整组），失败不阻塞选优。
+
+        带宽抖动大，按 speed_cache_ttl（默认 30 分钟）周期整组重测即可；
+        单轮测速失败记 None 排最后，下一轮 ttl 到期前不重复烧流量。
+        """
+        now = time.time()
+        if now - self._last_speed_test < self._speed_cache_ttl:
+            return
+        self._last_speed_test = now
+        try:
+            results = self.health_checker.batch_check_speed(
+                node_ids, size_bytes=self._speed_test_size, timeout=30)
+            for r in results:
+                self._speed_cache[r['id']] = {
+                    'speed_mbps': r.get('speed_mbps'),
+                    'ts': now,
+                }
+            speeds = ', '.join(
+                f'{r["id"]}={self._fmt_speed(r.get("speed_mbps"))}'
+                for r in results)
+            logger.info(f'测速刷新完成：{speeds}')
+        except Exception as e:
+            logger.error(f'测速刷新失败: {e}')
+
+    def _sort_by_speed(self, usable: list) -> list:
+        """按带宽降序排：测速缺失/失败的排最后，同带宽按延迟升序兜底。"""
+        def key(r):
+            cache = self._speed_cache.get(r['id'])
+            speed = cache.get('speed_mbps') if cache else None
+            return (speed is None, -(speed or 0),
+                    r.get('latency_ms') or float('inf'))
+        return sorted(usable, key=key)
+
+    @staticmethod
+    def _fmt_speed(speed) -> str:
+        """带宽数值格式化：None -> 'N/A'，否则 'X.X Mbps'。"""
+        if speed is None:
+            return 'N/A'
+        return f'{speed:.1f}Mbps'
 
     @staticmethod
     def _log_usable_status(results: list, usable: list) -> None:

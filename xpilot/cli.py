@@ -306,7 +306,11 @@ def _probe_proxy_latency(health_checker, socks_port, timeout=8):
 
 
 def _probe_speed(health_checker, socks_port, size_bytes, timeout=30, direct=False):
-    """测下载网速，返回 Mbps 标签。direct=True 测直连，否则走指定 socks 端口。"""
+    """测下载网速，返回 Mbps 标签。direct=True 测直连，否则走指定 socks 端口。
+
+    注意：status 命令已不再调用本函数（2026-08-02 起默认不测速，
+    见 status 命令 docstring）；保留供将来需要展示测速结果的场景复用。
+    """
     try:
         speed, elapsed = health_checker._curl_download(
             socks_port, size_bytes, timeout=timeout, direct=direct)
@@ -331,12 +335,17 @@ def _probe_direct_latency(health_checker, timeout=8):
 
 
 @cli.command()
-@click.option('-v', '--verbose', is_flag=True, help='Show detailed status')
-@click.option('--no-speed', is_flag=True, help='跳过网速测试（只看延迟）')
+@click.option('-v', '--verbose', is_flag=True, help='额外显示延迟信息')
+@click.option('--no-speed', is_flag=True, hidden=True,
+              help='[已废弃] 默认不再测速，此选项无效果')
 def status(verbose, no_speed):
-    """显示代理状态（当前节点延迟、经节点网速、直连网速）。"""
+    """显示代理状态（是否运行、当前节点、连通性）。
+
+    默认不测延迟、不测网速（避免每次 status 等 10-20 秒），只检查当前节点
+    能否正常连上——经当前在跑的代理访问 generate_204，通即「正常连接」。
+    加 -v/--verbose 才显示经节点与直连延迟。
+    """
     config, node_manager, _, proxy_manager, health_checker, _ = get_managers()
-    speed_bytes = 5 * 1_000_000  # status 测速默认下载 5MB（经节点 + 直连各一次）
     try:
         info = proxy_manager.get_status()
         if info['running']:
@@ -344,22 +353,26 @@ def status(verbose, no_speed):
             click.echo(f'  PID: {info["pid"]}')
             click.echo(f'  Current node: {info.get("node_name", "")} ({info["current_node"]})')
             socks_port = info.get('socks_port', 1080)
-            click.echo(f'  延迟(经节点): {_probe_proxy_latency(health_checker, socks_port)}')
-            click.echo(f'  延迟(直连): {_probe_direct_latency(health_checker)}')
             click.echo(f'  SOCKS port: {socks_port}')
             click.echo(f'  HTTP port: {info.get("http_port", "N/A")}')
-            if not no_speed:
-                click.echo('  测速中（经节点 + 直连，各 5MB，约 10s）...')
-                click.echo(f'  经节点网速: {_probe_speed(health_checker, socks_port, speed_bytes)}')
-                click.echo(f'  直连网速: {_probe_speed(health_checker, None, speed_bytes, direct=True)}')
+            # 连通性：走当前代理访问 generate_204，只报通/不通，不展示延迟。
+            try:
+                ok, _code, _lat = health_checker._curl_through_socks(socks_port, timeout=8)
+                if ok:
+                    click.echo(click.style(
+                        '  当前节点连通性: OK（经代理访问 generate_204 成功）', fg='green'))
+                else:
+                    click.echo(click.style(
+                        '  当前节点连通性: 不通（代理流量无法到达 generate_204）', fg='red'))
+            except Exception as e:
+                click.echo(f'  当前节点连通性: 检测失败 ({e})')
+            if verbose:
+                click.echo(f'  延迟(经节点): {_probe_proxy_latency(health_checker, socks_port)}')
+                click.echo(f'  延迟(直连): {_probe_direct_latency(health_checker)}')
         else:
             click.echo(click.style('Stopped', fg='red'))
             if info.get('current_node'):
                 click.echo(f'  Last used node: {info["current_node"]}')
-            click.echo(f'  延迟(直连): {_probe_direct_latency(health_checker)}')
-            if not no_speed:
-                click.echo('  测速中（直连 5MB）...')
-                click.echo(f'  直连网速: {_probe_speed(health_checker, None, speed_bytes, direct=True)}')
 
         # auto_switch 状态提示：关闭时当前节点失效不会自动切换到最优。
         try:
