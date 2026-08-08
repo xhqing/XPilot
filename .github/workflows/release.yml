@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: XPilot
     steps:
       - uses: actions/checkout@v4
 
@@ -28,5 +31,5 @@ jobs:
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: XPilot/dist/*
           generate_release_notes: true

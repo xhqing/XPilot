@@ -1,0 +1,859 @@
+<div align="center">
+  <img src="assets/logo.svg" alt="XPilot logo" width="380">
+
+  <p>
+    <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+    <img src="https://img.shields.io/github/last-commit/xhqing/NetOpsAgent" alt="Last Commit">
+    <img src="https://img.shields.io/badge/Type-Python%20CLI-blue" alt="Type: Python CLI">
+  </p>
+
+  <p>
+    <a href="README_cn.md">简体中文</a>
+    &nbsp;|&nbsp;
+    English
+  </p>
+</div>
+
+## 🛠️ XPilot — x-ray pilot, a Hermes CLI tool for Xray
+
+**XPilot** is a Python CLI tool that makes it easy to use [Xray-core](https://github.com/XTLS/Xray-core) — one of the CLI tools developed by the **Hermes** (赫尔墨斯) Network Operations Agent, living as a self-contained subproject inside the [NetOpsAgent](https://github.com/xhqing/NetOpsAgent) repository. "xpilot" stands for "x-ray pilot". Hermes' overall job is handling **network connectivity problems** — proxy forwarding is only one slice of that — and XPilot is the tool Hermes built to cover the proxy slice.
+
+XPilot keeps your proxy connection alive and fast:
+
+- **Real-traffic node testing** — verifies whether each proxy node can actually carry traffic, not just whether TCP reaches the server (catches expired credentials, failed handshakes, and nodes that can't reach the internet).
+- **Smart node selection** — picks the fastest usable node by latency and bandwidth, with three strategies: latency-only, speed-only, or a hybrid that leads with bandwidth and falls back on latency.
+- **Automatic failover** — the moment the current node degrades, it switches to a better one; when all nodes go down, it refreshes subscriptions and retries.
+- **Flexible routing** — sends specific domains (GitHub, OpenAI, Google …) through specific nodes while everything else uses the default.
+
+This README documents XPilot standalone. Run the commands yourself, or hand them to your AI assistant — either way, the tool does the work.
+
+## Features
+
+- Supports VMess, VLESS, Trojan, and Shadowsocks protocols
+- Smart node health detection (latency / connectivity)
+- Automatic switching to the lowest-latency usable node (real-traffic based)
+- Subscription auto-import (Base64 / JSON / Clash formats)
+- macOS system proxy integration
+- Flexible routing rule management (proxy / direct / block)
+- Common commands (`start` / `restart` / `stop` / `status`) run in the background and return immediately; logs are persisted to disk for easy troubleshooting
+
+## Installation
+
+> **Note**: This tool is a Python CLI and requires [Xray-core](https://github.com/XTLS/Xray-core) to be installed first as the proxy backend. The whole installation can be handled by your AI assistant — send it this section along with your operating system, and it should set everything up end to end. Once installed, the tool's defaults already match the official Xray install path, so no manual configuration is needed to start using it.
+
+### Requirements
+
+| Dependency | Version | Notes |
+|------------|---------|-------|
+| Python | 3.8+ | Runs the CLI itself |
+| **Xray-core** | `v26.3.27` recommended | Proxy backend (other recent versions usually work too) |
+
+> **About the Xray version**: This tool is verified against `v26.3.27`, which is the recommended version. Xray-core's protocol implementations and config fields are generally stable across versions, so other recent versions usually work; if you hit a compatibility issue, fall back to `v26.3.27`.
+
+### Step 1: Install Xray-core (pinned version)
+
+The official Xray install script supports installing a specific version via `--version`. Run in your terminal:
+
+```bash
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --version v26.3.27
+```
+
+After installation:
+
+- The binary is at `/usr/local/bin/xray` (macOS / Linux, the default path of the official script).
+- Verify the installation:
+
+```bash
+xray version
+# Should print something like: Xray 26.3.27 (Xray, Penetrates Everything.)
+```
+
+<details>
+<summary>macOS users: if you lack Homebrew's curl/cert, or the command above fails, use this instead</summary>
+
+```bash
+# 1. Download the install script
+curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o /tmp/install-release.sh
+
+# 2. Install with the pinned version
+bash /tmp/install-release.sh install --version v26.3.27
+
+# 3. Clean up
+rm /tmp/install-release.sh
+```
+
+Windows users: the official script does not support Windows. Download the matching `windows.zip` from [Xray-core Releases](https://github.com/XTLS/Xray-core/releases/tag/v26.3.27), extract it, place `xray.exe` in a directory (e.g. `C:\xray\xray.exe`), and after installing this tool point the `xray_bin` field in `settings.json` to that path.
+</details>
+
+### Step 2: Install xpilot
+
+Clone the repository and install from source (editable mode) inside the `XPilot` subproject:
+
+```bash
+git clone https://github.com/xhqing/NetOpsAgent.git
+cd NetOpsAgent/XPilot
+pip install -e .
+```
+
+Or install just the dependencies and run it as a module:
+
+```bash
+pip install click 'requests[socks]' pyyaml
+python3 -m xpilot.cli --help
+```
+
+After installation, you get the `xpilot` command:
+
+```bash
+xpilot --help
+```
+
+> **No need to touch the defaults**: the config generated by `xpilot init` already points `xray_bin` to `/usr/local/bin/xray`, matching the path from the official script above. If you installed xray somewhere else (e.g. Windows or a custom path), edit the `xray_bin` field in `~/.config/xpilot/settings.json` (or the project's `config/settings.json`) to point to the actual path.
+
+> **Staying up to date**: once installed, run `xpilot --update` anytime to check GitHub for a newer release and install it automatically — no manual download or `pip install` needed.
+
+### Step 3: Let your AI assistant install it (optional)
+
+If you'd rather not run these commands by hand, copy this section to your AI assistant (Claude, ChatGPT, Gemini, etc.) and include:
+
+- Your operating system (macOS / Windows / Linux distro) and CPU architecture (Apple Silicon / Intel / x64 / arm64)
+- Any existing proxy node info (if you have it), or let the assistant guide you through `xpilot node add`
+
+The assistant should be able to: identify and install the pinned `v26.3.27` of Xray-core → install this tool → run `xpilot init` → help you add nodes and start the proxy.
+
+## Quick Start
+
+```bash
+# 1. Initialize configuration
+xpilot init
+
+# 2. Add a node
+xpilot node add --name "My Node" --protocol vmess --address server.example.com --port 443 --uuid your-uuid
+
+# 3. Start the proxy (runs in the background, auto-selects the fastest node, returns immediately)
+xpilot start
+
+# 4. Check status
+xpilot status
+
+# 5. Test connectivity of all nodes
+xpilot test --all-nodes
+
+# 6. Stop the proxy
+xpilot stop
+```
+
+> `start` / `restart` launch the xray proxy process and the auto-switch monitor daemon in the background, and the command itself returns immediately without blocking your terminal. The proxy process and its logs keep running in the background — use `status` to check state, and read the logs to troubleshoot.
+
+## Common Commands
+
+The commands you'll use most often:
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `xpilot start` | Start the proxy in the background (auto-selects the fastest node) and return | `xpilot start` |
+| `xpilot stop` | Stop the proxy and its background daemon | `xpilot stop` |
+| `xpilot status` | Show proxy running state | `xpilot status -v` |
+| `xpilot restart` | Restart the proxy in the background (auto-selects the fastest node) and return | `xpilot restart` |
+| `xpilot test --all-nodes` | Test latency and connectivity of all nodes | `xpilot test -a` |
+
+---
+
+## Command Reference
+
+### Basic Commands
+
+#### `init` - Initialize configuration files
+
+Creates the default config files (`nodes.json`, `routing.json`, `settings.json`) under `~/.config/xpilot/`.
+
+```bash
+xpilot init
+```
+
+Force overwrite existing config:
+
+```bash
+xpilot init -f
+```
+
+---
+
+#### `start` - Start the proxy service
+
+Starts the xray proxy process in the background and sets the system proxy, then returns immediately. The auto-switch monitor daemon runs in the background alongside it.
+
+Start with the default node (auto-selects the fastest):
+
+```bash
+xpilot start
+```
+
+Start with a specific node:
+
+```bash
+xpilot start my_node
+```
+
+---
+
+#### `stop` - Stop the proxy service
+
+Stops the xray process, the background monitor daemon, and turns off the system proxy.
+
+```bash
+xpilot stop
+```
+
+---
+
+#### `restart` - Restart the proxy service
+
+Stops then starts in the background, auto-selecting the fastest node, and returns immediately.
+
+```bash
+xpilot restart
+```
+
+---
+
+#### `status` - Show proxy status
+
+Shows whether the proxy is running, the current node, ports, and the current node's real-traffic latency next to a direct-connection latency for comparison. By default it also measures download speed through the node and the direct (no-proxy) speed.
+
+```bash
+xpilot status
+```
+
+Skip the speed test (latency only, returns instantly):
+
+```bash
+xpilot status --no-speed
+```
+
+---
+
+#### `switch` - Switch node
+
+Switches to the specified node and restarts the proxy service.
+
+```bash
+xpilot switch another_node
+```
+
+---
+
+#### `--update` - Update to the latest release
+
+Checks the project's [GitHub Release](https://github.com/xhqing/NetOpsAgent/releases) for a newer version and, if one exists, downloads and installs it automatically (preferring the wheel attached to the release, then the sdist tarball, falling back to building from the tagged source if neither is present).
+
+```bash
+xpilot --update
+```
+
+The update source is GitHub Release (this project is not published on PyPI). If you're already on the latest version, it reports so and exits.
+
+---
+
+#### `rollback` - Roll back to a previous release
+
+Installs an older [GitHub Release](https://github.com/xhqing/NetOpsAgent/releases). Without `--version`, it rolls back to the release immediately older than the currently running version. With `--version X.Y.Z`, it installs that exact release. Installation reuses the same assets as `--update` (wheel, then sdist tarball, then the tagged source).
+
+```bash
+# Roll back to the previous release
+xpilot rollback
+
+# Roll back to a specific version
+xpilot rollback --version 0.1.1
+```
+
+If the target version equals the currently running one, it reports so and exits without doing anything.
+
+---
+
+### Node Management Commands
+
+#### `node list` - List all nodes
+
+Shows all saved nodes (ID, name, protocol, address, latency).
+
+```bash
+xpilot node list
+```
+
+Filter by group:
+
+```bash
+xpilot node list -g work
+```
+
+---
+
+#### `node add` - Add a node
+
+Adds a new proxy node to the configuration.
+
+Add a VMess node:
+
+```bash
+xpilot node add --name "Japan Node" --protocol vmess --address jp.example.com --port 443 --uuid xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --tls --servername jp.example.com
+```
+
+Add a Trojan node:
+
+```bash
+xpilot node add --name "US Node" --protocol trojan --address us.example.com --port 443 --password yourpassword --tls
+```
+
+Add a Shadowsocks node:
+
+```bash
+xpilot node add --name "SS Node" --protocol ss --address ss.example.com --port 8388 --password ss_password --security chacha20-ietf-poly1305
+```
+
+Add a VLESS node:
+
+```bash
+xpilot node add --name "VLESS Node" --protocol vless --address vless.example.com --port 443 --uuid xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --tls --network ws --servername vless.example.com
+```
+
+Add with a group:
+
+```bash
+xpilot node add --name "Work Node" --protocol vmess --address work.example.com --port 443 --uuid work-uuid --group work
+```
+
+**Parameter reference:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `--name` | str | yes | Node name |
+| `--protocol` | str | yes | Protocol (vmess/vless/trojan/ss) |
+| `--address` | str | yes | Server address |
+| `--port` | int | yes | Server port |
+| `--uuid` | str | partial | UUID (required for VMess/VLESS) |
+| `--password` | str | partial | Password (required for Trojan/SS) |
+| `--alter-id` | int | no | VMess alterId, default 0 |
+| `--security` | str | no | Encryption method, default auto |
+| `--network` | str | no | Transport (tcp/ws/h2/grpc), default tcp |
+| `--tls` | flag | no | Enable TLS |
+| `--servername` | str | no | TLS server name (SNI) |
+| `--group` | str | no | Group name, default `default` |
+
+---
+
+#### `node remove` - Remove a node
+
+Removes the specified node from the configuration.
+
+```bash
+xpilot node remove my_node
+```
+
+---
+
+#### `node edit` - Edit a node
+
+Modifies an existing node's configuration.
+
+Change the node name:
+
+```bash
+xpilot node edit my_node --name "New Name"
+```
+
+Change the server address:
+
+```bash
+xpilot node edit my_node --address new.example.com
+```
+
+Change the port:
+
+```bash
+xpilot node edit my_node --port 8443
+```
+
+Change the group:
+
+```bash
+xpilot node edit my_node --group work
+```
+
+Change the UUID:
+
+```bash
+xpilot node edit my_node --uuid new-uuid-here
+```
+
+Change TLS settings:
+
+```bash
+xpilot node edit my_node --tls --servername new.example.com
+```
+
+---
+
+#### `node import` - Import nodes from a subscription
+
+Parses a subscription link and imports nodes in bulk. Supports Base64, JSON, and Clash formats.
+
+```bash
+xpilot node import "https://example.com/subscription/link"
+```
+
+---
+
+#### `node export` - Export node configuration
+
+Exports all current nodes as JSON or YAML.
+
+Export as JSON:
+
+```bash
+xpilot node export
+```
+
+Export as YAML:
+
+```bash
+xpilot node export -f yaml
+```
+
+---
+
+### Test Commands
+
+#### `test` - Test node connectivity
+
+By default, performs a **real-traffic** check: spins up a temporary xray instance per node and requests `generate_204` through it, so the result reflects whether the node can actually proxy traffic — not just whether TCP reaches the server. This catches the common failure where TCP connects but the proxy is unusable (expired credentials, protocol handshake failure). Output shows both TCP reachability and proxy availability.
+
+Test a specific node:
+
+```bash
+xpilot test --node my_node
+```
+
+Test all nodes:
+
+```bash
+xpilot test --all-nodes
+```
+
+Using the shorthand:
+
+```bash
+xpilot test -a
+```
+
+Test the current default node:
+
+```bash
+xpilot test --current
+```
+
+Test all nodes in a specific group:
+
+```bash
+xpilot test --group work
+```
+
+Fast TCP-only check (no real-traffic probe, returns in seconds):
+
+```bash
+xpilot test --all-nodes --tcp
+```
+
+#### `test speed` - Test download speed
+
+Measures download speed via the Cloudflare `__down` endpoint (default 10 MB per node). `--all-nodes` tests every node's proxy speed concurrently; `--direct` tests direct (no-proxy) speed; `--current` tests only the default node.
+
+Test speed through all nodes (concurrent):
+
+```bash
+xpilot test speed --all-nodes
+```
+
+Test direct (no-proxy) speed:
+
+```bash
+xpilot test speed --direct
+```
+
+Test the current node's proxy speed, or change the download size (MB):
+
+```bash
+xpilot test speed --current
+xpilot test speed --all-nodes --size 20
+```
+
+---
+
+### Routing Rule Commands
+
+#### `routing list` - List routing rules
+
+Lists all current proxy, direct, and block rules.
+
+```bash
+xpilot routing list
+```
+
+---
+
+#### `routing add` - Add a routing rule
+
+Adds a new routing rule to the proxy, direct, or block list.
+
+Add a proxy rule:
+
+```bash
+xpilot routing add proxy "geosite:google"
+```
+
+Add a direct rule:
+
+```bash
+xpilot routing add direct "geoip:private"
+```
+
+Add a block rule:
+
+```bash
+xpilot routing add block "geosite:ads"
+```
+
+---
+
+#### `routing remove` - Remove a routing rule
+
+Removes the specified rule from all rule lists.
+
+```bash
+xpilot routing remove "geosite:google"
+```
+
+---
+
+### Domain Routing Commands (specific sites via specific nodes)
+
+Domain routing lets you route specified domains through a specific proxy node — for example, sending GitHub traffic through a dedicated node while everything else uses the default node.
+
+#### `routing domain add` - Add a domain routing rule
+
+Points a set of domains at a specific proxy node.
+
+Route GitHub-related domains through `github_node`:
+
+```bash
+xpilot routing domain add -d github.com -d '*.github.io' -d api.github.com -n github_node --desc "GitHub"
+```
+
+Route OpenAI through another node:
+
+```bash
+xpilot routing domain add -d openai.com -d '*.openai.com' -d chatgpt.com -n openai_node --desc "OpenAI"
+```
+
+Route Google services through a dedicated node:
+
+```bash
+xpilot routing domain add -d google.com -d '*.google.com' -d youtube.com -d '*.youtube.com' -n google_node --desc "Google & YouTube"
+```
+
+**Parameter reference:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `-d, --domains` | str | yes | Domain patterns; can be specified multiple times |
+| `-n, --node` | str | yes | Target node ID |
+| `--desc` | str | no | Rule description; defaults to the domain list |
+
+---
+
+#### `routing list` - List routing rules (including domain routing)
+
+Lists all current proxy, direct, and block rules as well as domain-to-node mappings.
+
+```bash
+xpilot routing list
+```
+
+Example output:
+
+```
+Proxy rules:
+  [PROXY] geosite:google
+
+Direct rules:
+  [DIRECT] geoip:private
+
+Domain-to-node rules:
+  [0] GitHub -> github_node
+  [1] OpenAI -> openai_node
+```
+
+Here `[0]`, `[1]` are rule indices, used when deleting.
+
+---
+
+#### `routing domain remove` - Remove a domain routing rule
+
+Removes the specified domain rule by index.
+
+Remove the rule at index 0:
+
+```bash
+xpilot routing domain remove 0
+```
+
+---
+
+#### `routing domain clear` - Clear all domain routing rules
+
+Deletes all domain-to-node mapping rules.
+
+```bash
+xpilot routing domain clear
+```
+
+Force clear without confirmation:
+
+```bash
+xpilot routing domain clear -f
+```
+
+---
+
+### Subscription Management Commands
+
+#### `subscription add` - Add a subscription source
+
+Saves a subscription link for later updates.
+
+```bash
+xpilot subscription add "https://example.com/subscription" --name "My Subscription"
+```
+
+---
+
+#### `subscription update` - Update subscriptions
+
+Refreshes nodes from saved subscription sources: matches existing nodes by name and overwrites their connection fields (address, port, UUID, password, cipher, etc.) with the latest from the subscription, while preserving IDs, groups, and custom names; new nodes are also imported. Use `node import` to append without refreshing existing nodes.
+
+Update all subscription sources:
+
+```bash
+xpilot subscription update
+```
+
+Update a specific subscription source:
+
+```bash
+xpilot subscription update "My Subscription"
+```
+
+---
+
+#### `subscription list` - List subscription sources
+
+Shows all saved subscription sources.
+
+```bash
+xpilot subscription list
+```
+
+---
+
+#### `subscription remove` - Remove a subscription source
+
+Removes a saved subscription source.
+
+```bash
+xpilot subscription remove "My Subscription"
+```
+
+---
+
+### Configuration Management Commands
+
+#### `config show` - Show current configuration
+
+Displays the full contents of `settings.json`.
+
+```bash
+xpilot config show
+```
+
+---
+
+#### `config set` - Set a configuration value
+
+Modifies a value in the settings file, supporting dot-notation paths for nested configuration.
+
+Change the log level:
+
+```bash
+xpilot config set log_level debug
+```
+
+Change the SOCKS port:
+
+```bash
+xpilot config set socks_port 7890
+```
+
+Enable auto-switching:
+
+```bash
+xpilot config set auto_switch.enabled true
+```
+
+Tune the switch hysteresis (only switch to a better node if it's at least this much faster; 0 = always switch to the lowest-latency node, which is the default):
+
+```bash
+xpilot config set auto_switch.hysteresis 0.2
+```
+
+Enable the system proxy:
+
+```bash
+xpilot config set system_proxy.enabled true
+```
+
+---
+
+#### `config reset` - Reset configuration
+
+Restores all configuration files to their defaults.
+
+```bash
+xpilot config reset
+```
+
+Force reset without confirmation:
+
+```bash
+xpilot config reset -f
+```
+
+---
+
+## Configuration Files
+
+Configuration files live under `~/.config/xpilot/`:
+
+| File | Purpose |
+|------|---------|
+| `nodes.json` | Node configuration (address, protocol, UUID, etc.) |
+| `routing.json` | Routing rules (proxy / direct / block lists) |
+| `settings.json` | Global settings (ports, xray path, auto-switch, etc.) |
+
+### How configuration works
+
+- **Initialization**: running `xpilot init` generates the three default config files above under `~/.config/xpilot/`; add `-f` to force-overwrite existing config.
+- **Directory location**: follows the XDG spec — uses `$XDG_CONFIG_HOME/xpilot` when set, falling back to `~/.config/xpilot` (on Windows, `%APPDATA%/xpilot`). The whole config directory can also be overridden with the `PROXY_TOOLKIT_CONFIG_DIR` environment variable (handy for switching between multiple configs and for testing).
+- **No config inside the project**: the repo's `config/` directory only keeps `*.example.json` templates for reference and **contains no real configuration**; real config (including node credentials) lives only in your user directory, keeping credentials out of the codebase by design.
+
+```bash
+pip install -e .            # Install the CLI
+xpilot init                 # Initialize default config under ~/.config/xpilot/
+xpilot node add ...         # Add a node (writes to nodes.json in your user dir)
+xpilot config show          # Show current configuration
+```
+
+- **Isolated dev proxy**: `dev/isolated_proxy.py` (ports 2080/2087, never touches the system proxy) also reads `nodes.json` from your user directory, sharing one node config with the main tool so you don't have to maintain it twice.
+
+### settings.json field reference
+
+```json
+{
+  "xray_bin": "/usr/local/bin/xray",
+  "socks_port": 1080,
+  "http_port": 1087,
+  "log_level": "warning",
+  "log_file": "/tmp/xpilot.log",
+  "auto_switch": {
+    "enabled": true,
+    "interval": 300,
+    "strategy": "latency",
+    "hysteresis": 0
+  },
+  "watchdog": {
+    "enabled": true,
+    "interval": 30,
+    "max_retries": 3,
+    "retry_delay": 5
+  },
+  "subscription": {
+    "auto_update": false,
+    "update_interval": 3600
+  },
+  "system_proxy": {
+    "enabled": true,
+    "bypass_local": true
+  }
+}
+```
+
+> **watchdog vs auto_switch**: `watchdog` is on by default and restarts the xray process if it exits unexpectedly (keep-alive), independent of whether `auto_switch` is enabled; `auto_switch` is on by default and picks the **lowest-latency usable node** (measured by real traffic) every interval — if the best node isn't the current one, it switches; `hysteresis` avoids flapping between nodes with similar latency. When all nodes are unreachable, it refreshes the subscription (by node name). The two are independent and can be toggled separately.
+
+## Logs
+
+xpilot persists its runtime logs to files so you can track down problems when the proxy misbehaves. There are two kinds:
+
+| Log file | Contents | Notes |
+|----------|----------|-------|
+| `/tmp/xpilot.log` | xpilot's own log | Records proxy start/stop, auto-switching, health checks, etc.; the background daemon's output is written here too. Path is controlled by the `log_file` field in `settings.json` |
+| `/tmp/xpilot-xray-stdout.log` | xray process stdout | Useful for xray startup and protocol handshake issues |
+| `/tmp/xpilot-xray-stderr.log` | xray process stderr | xray errors show up here first |
+
+Reading the logs:
+
+```bash
+cat /tmp/xpilot.log                  # xpilot's own log
+tail -f /tmp/xpilot-xray-stderr.log  # Follow xray errors in real time
+```
+
+For more detail, raise the log level to `debug`:
+
+```bash
+xpilot config set log_level debug
+```
+
+## FAQ
+
+### Q: The proxy fails to start?
+
+- Make sure xray is installed correctly: `which xray`
+- Check whether the port is already in use
+- Read the xray error log: `cat /tmp/xpilot-xray-stderr.log`
+- Read xpilot's own log: `cat /tmp/xpilot.log`
+
+### Q: The system proxy can't be set?
+
+- Setting the system proxy on macOS requires network privileges
+- You can check manually under System Settings → Network → Advanced → Proxies
+
+### Q: Health checks time out?
+
+- Check that your network connection is working
+- Confirm the node configuration is correct
+- Increase the test timeout
+
+---
+
+## License & Attribution
+
+This project is licensed under the [MIT License](LICENSE.md).
+
+Copyright (c) 2026 All Contributors.
+
+### Attribution
+
+If you reuse or redistribute any part of this project, please:
+
+- Retain the above copyright notice and the MIT license text.
+- Credit the project by linking back to its source.
+
+**Project URL:** [https://github.com/xhqing/NetOpsAgent](https://github.com/xhqing/NetOpsAgent)

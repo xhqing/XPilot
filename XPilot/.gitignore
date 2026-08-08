@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+
+# Sensitive / local runtime configs (contain real credentials & host paths)
+# Templates (config/*.example.json) are tracked; the real ones are not.
+config/nodes.json
+config/settings.json
+config/settings-isolated.json
+
+# Logs / runtime state
+/tmp/
+*.log
+*.pid

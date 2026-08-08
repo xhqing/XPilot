@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='xpilot',
-    version='0.5.0',
+    version='0.6.0',
     description='A CLI proxy toolkit with xray backend',
     packages=find_packages(),
     python_requires='>=3.8',

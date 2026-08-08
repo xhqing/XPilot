@@ -16,7 +16,7 @@ import sys
 from . import __version__
 
 REPO_OWNER = 'xhqing'
-REPO_NAME = 'xpilot'
+REPO_NAME = 'NetOpsAgent'
 PROJECT_URL = f'https://github.com/{REPO_OWNER}/{REPO_NAME}'
 LATEST_RELEASE_API = f'https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest'
 ALL_RELEASES_API = f'https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases'

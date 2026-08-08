@@ -132,7 +132,7 @@ class TestPerformUpdate:
             runner=lambda cmd: captured.setdefault('cmd', cmd),
         )
         assert ok is True
-        assert 'git+https://github.com/xhqing/xpilot@v9.9.9' in captured['cmd']
+        assert 'git+https://github.com/xhqing/NetOpsAgent@v9.9.9' in captured['cmd']
 
     def test_check_only_does_not_install(self):
         """测试：check_only 模式只报告有新版，不调用 pip。"""
@@ -241,7 +241,7 @@ class TestPerformRollback:
             runner=lambda cmd: captured.setdefault('cmd', cmd),
         )
         assert ok is True
-        assert 'git+https://github.com/xhqing/xpilot@v0.1.0' in captured['cmd']
+        assert 'git+https://github.com/xhqing/NetOpsAgent@v0.1.0' in captured['cmd']
 
     def test_already_at_target_version_does_nothing(self):
         """测试：目标版本与当前版本相同时不调用 pip。"""
