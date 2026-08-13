@@ -4,18 +4,16 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.6.0] - 未发布
+## [0.5.1] - 未发布
 
 ### 变更
 
-- 项目定位 Agent 化：拟人名定为 **Hermes（赫尔墨斯）**、职称「网络运维管理员」（fleet 项目名 **NetOpsAgent**），纳入 fleet 智能体体系。**为什么**：项目本质就是代理节点的真实流量测速、自动选路、故障转移、订阅刷新——正是「网络运维管理员」的职责，赋予 Agent 人格后定位更清晰、便于跨 agent 协作推荐。Agent 化只改定位、README 人格与 fleet 注册表，**不改 CLI 命令名（仍为 `xpilot`）与任何实际功能**，向后完全兼容。
-- `README.md` / `README_cn.md`：开头新增「Hermes —— 网络运维管理员 Agent」身份节（四项核心运维能力：真实流量检测、智能选优、自动故障转移、灵活路由）；徽章按 agent 项目标准调整——移除「Built with Claude Code」（点明 LLM 厂商，违反 fleet 约定）与「Type: Project」，替换为「Type: AI Agent」徽章。
-- `CLAUDE.md`：项目说明更新为 Agent 项目定位（标注拟人名 / 职称 / fleet 项目名 / 仓库）；移除已过时的「agent-persona / agent-llm 跳过」条目（本项目现已是 Agent 项目，不再跳过拟人名检测）。
-- 仓库与目录重命名：GitHub 仓库 `xhqing/XPilot` → `xhqing/NetOpsAgent`（旧地址自动 301 重定向）、本地目录 `XPilot` → `NetOpsAgent`。**为什么**：fleet 约定项目名为 `XxxAgent`，物理身份对齐 `NetOpsAgent` 便于识别；CLI 命令名与包名仍为 `xpilot`（保留向后兼容，现有用户不受影响）。同步更新：`xpilot/updater.py` 的 `REPO_NAME`（保证 `--update` 从新仓库拉 Release）、`tests/test_updater.py` 的 pip 安装期望值、两份 README 的全部 GitHub 链接与徽章 URL、GitHub About（改为中英双语 Hermes 定位 + 新增 `agent` / `network-ops` topics）。
-
-### 新增
-
-- Hermes / NetOpsAgent 注册到全局 fleet 智能体命名注册表（`~/.claude/CLAUDE.md`），并标注流水线位置为「独立于销售流水线」（专职网络运维，为需要稳定代理连接的 agent 提供节点测速选路与故障转移能力）。按「新建带拟人名 Agent 时自动维护注册表」规则，此步免确认。
+- 撤销 2026-08-08 的 Agent 化重构（原记录于 0.6.0 未发布条目，该条目已移除），项目恢复为独立的 **XPilot 工具项目**。**为什么**：Agent 化重构把工具塞进 `XPilot/` 子目录、仓库与目录改名 `NetOpsAgent`，实际使用中发现工具独立成库更合适——恢复原目录布局与仓库名，Agent 定位（Hermes / NetOpsAgent）拆到独立仓库 `xhqing/NetOpsAgent`。工具功能、命令名（仍为 `xpilot`）、包名均不受影响。
+- 目录布局恢复：`XPilot/` 子目录内容全部移回仓库根目录（代码、配置、测试、Docker、README / CHANGELOG / VERSION / LICENSE、`.gitignore`）；删除根目录 Agent 层文档（Hermes 定位 README、`.claude/`、`.codebuddy/`、Agent 版 CHANGELOG / VERSION / assets logo）。
+- `README.md` / `README_cn.md`：去除 Hermes / 子项目表述，恢复独立工具文档；GitHub 链接、徽章 URL 改回 `xhqing/XPilot`。
+- `xpilot/updater.py` 的 `REPO_NAME` 改回 `XPilot`（`--update` / `rollback` 从改回后的仓库拉 Release）；`tests/test_updater.py` 的 pip 安装期望值同步改回。
+- `.github/workflows/release.yml`：去掉 `XPilot` 子目录相关配置（`working-directory`、`XPilot/dist/*`），恢复在仓库根目录构建并上传 Release 资产。
+- `CLAUDE.md` 恢复工具项目说明（含 agent-persona / agent-llm 跳过项）。
 
 ## [0.5.0] - 2026-08-02
 
