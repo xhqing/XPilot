@@ -68,25 +68,48 @@ LAUNCHD_PLIST_PATH = os.path.expanduser(
 )
 
 
-def _stop_monitor_daemon():
-    """Stop the background auto-switch monitor daemon if running."""
-    if not os.path.exists(AUTO_SWITCH_PID_FILE):
-        return
+def _kill_all_monitors():
+    """Kill every background monitor daemon process.
+
+    The PID file only records the *last* spawned monitor; daemons left over
+    from earlier runs would keep running stale code (rewriting the xray config
+    and restarting xray with it), fighting the current one and silently
+    overriding config changes. Match all monitor processes by command line
+    instead of relying on the PID file.
+    """
     try:
-        with open(AUTO_SWITCH_PID_FILE, 'r') as f:
-            pid = int(f.read().strip())
-        try:
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(0.5)
+        result = subprocess.run(
+            ['pgrep', '-f', r'xpilot\.cli monitor'],
+            capture_output=True, text=True, timeout=5)
+        pids = [int(p) for p in result.stdout.split()]
+    except Exception as e:
+        click.echo(f'Warning: failed to enumerate monitor daemons: {e}', err=True)
+        pids = []
+    self_pid = os.getpid()
+    for pid in pids:
+        if pid != self_pid:
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, signal.SIGTERM)
             except OSError:
                 pass
+    if pids:
+        time.sleep(0.5)
+        for pid in pids:
+            if pid != self_pid:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+    if os.path.exists(AUTO_SWITCH_PID_FILE):
+        try:
+            os.remove(AUTO_SWITCH_PID_FILE)
         except OSError:
             pass
-        os.remove(AUTO_SWITCH_PID_FILE)
-    except Exception as e:
-        click.echo(f'Warning: failed to stop monitor daemon: {e}', err=True)
+
+
+def _stop_monitor_daemon():
+    """Stop all background auto-switch monitor daemons if running."""
+    _kill_all_monitors()
 
 
 def _spawn_monitor_daemon():

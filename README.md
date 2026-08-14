@@ -787,6 +787,35 @@ xpilot config show          # Show current configuration
 
 > **watchdog vs auto_switch**: `watchdog` is on by default and restarts the xray process if it exits unexpectedly (keep-alive), independent of whether `auto_switch` is enabled; `auto_switch` is on by default and picks the **lowest-latency usable node** (measured by real traffic) every interval — if the best node isn't the current one, it switches; `hysteresis` avoids flapping between nodes with similar latency. When all nodes are unreachable, it refreshes the subscription (by node name). The two are independent and can be toggled separately.
 
+### routing.json field reference
+
+```json
+{
+  "proxy_all": true,
+  "proxy_list": [
+    "domain:google.com",
+    "domain:github.com"
+  ],
+  "direct_list": [
+    "geoip:private"
+  ],
+  "block_list": [],
+  "domain_rules": [],
+  "rules": []
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `proxy_all` | `true` | **Global proxy mode (default)**: all traffic goes through the proxy except what `direct_list` / `block_list` explicitly match — unmatched traffic is explicitly sent to the proxy via a trailing fallback rule, so a missed/typo'd rule can never silently leak direct; `false` is **whitelist routing**: only `proxy_list` traffic goes through the proxy, everything else goes direct |
+| `proxy_list` | Common foreign domains | Rules routed through the proxy (supports `geosite:` / `domain:` prefixes or bare domains; bare domains are treated as domain rules and a log warning suggests adding the prefix) |
+| `direct_list` | `["geoip:private"]` | Rules routed directly (supports `geosite:` / `geoip:` prefixes, bare IPs and CIDRs) |
+| `block_list` | `[]` | Rules to block |
+| `domain_rules` | `[]` | Domain-to-node mapping rules (managed via `routing domain add`) |
+| `rules` | `[]` | Custom advanced rules (full Xray field rules, `type` may be `proxy` / `direct` / `block`) |
+
+> **Note**: in global proxy mode, a catch-all direct rule left in `rules` (e.g. `ip: ["0.0.0.0/0"]` with `type: "direct"`) matches before the proxy fallback and lets all traffic go direct — xpilot logs a warning about this conflict at startup; remove that rule or use `proxy_all: false` instead.
+
 ## Logs
 
 xpilot persists its runtime logs to files so you can track down problems when the proxy misbehaves. There are two kinds:

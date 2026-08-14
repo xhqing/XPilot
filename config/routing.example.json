@@ -1,5 +1,5 @@
 {
-  "proxy_all": false,
+  "proxy_all": true,
   "proxy_list": [
     "domain:google.com",
     "domain:github.com",

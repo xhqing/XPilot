@@ -84,8 +84,15 @@ class Config:
         }
 
     def get_default_routing_config(self) -> dict:
-        """Get default routing configuration."""
+        """Get default routing configuration.
+
+        proxy_all=True 为全局代理模式（默认）：除 direct_list / block_list
+        明确列出的流量外，其余全部走代理，未匹配的流量显式兜底到代理，
+        避免「以为走了代理、实际直连」；proxy_all=False 为白名单分流模式，
+        只有 proxy_list 列出的走代理，其余全部直连。
+        """
         return {
+            'proxy_all': True,
             'proxy_list': [
                 'domain:google.com',
                 'domain:github.com',

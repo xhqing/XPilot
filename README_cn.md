@@ -787,6 +787,35 @@ xpilot config show          # 查看当前配置
 
 > **watchdog 与 auto_switch 的区别**：`watchdog` 默认开启，负责在 xray 进程意外退出时自动重新拉起（保活），与是否启用 `auto_switch` 无关；`auto_switch` 默认开启，每 interval 秒在所有真实流量可用的节点中选**延迟最低**的，最优不是当前节点就切换（`hysteresis` 可防止两个节点延迟接近时来回抖动），全部节点不通时自动拉取订阅按名字刷新。两者相互独立，可单独开关。
 
+### routing.json 字段说明
+
+```json
+{
+  "proxy_all": true,
+  "proxy_list": [
+    "domain:google.com",
+    "domain:github.com"
+  ],
+  "direct_list": [
+    "geoip:private"
+  ],
+  "block_list": [],
+  "domain_rules": [],
+  "rules": []
+}
+```
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `proxy_all` | `true` | **全局代理模式（默认）**：除 `direct_list` / `block_list` 明确列出的流量外，其余全部走代理——未匹配的流量在规则末尾显式兜底到代理，即使规则写漏 / 写错也不会意外直连；`false` 为**白名单分流模式**：只有 `proxy_list` 列出的流量走代理，其余全部直连 |
+| `proxy_list` | 常用境外域名 | 走代理的规则列表（支持 `geosite:` / `domain:` 前缀或裸域名；裸域名会按域名规则处理并在日志中提示补前缀） |
+| `direct_list` | `["geoip:private"]` | 直连的规则列表（支持 `geosite:` / `geoip:` 前缀、裸 IP 与 CIDR） |
+| `block_list` | `[]` | 拦截的规则列表 |
+| `domain_rules` | `[]` | 域名→指定节点映射规则（用 `routing domain add` 管理） |
+| `rules` | `[]` | 自定义高级规则（完整 Xray field 规则，type 可为 `proxy` / `direct` / `block`） |
+
+> **注意**：全局代理模式下，若 `rules` 里残留全量直连兜底规则（如 `ip: ["0.0.0.0/0"]` 且 `type: "direct"`），它会先于代理兜底把全部流量放行直连——xpilot 启动日志会打 warning 提示该冲突，需删除该规则或改用 `proxy_all: false`。
+
 ## 运行日志
 
 xpilot 会把运行日志写入文件，便于在代理异常时定位问题。日志分两类：

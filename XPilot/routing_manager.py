@@ -1,5 +1,6 @@
 """Routing rule management for xpilot."""
 
+import ipaddress
 import logging
 
 logger = logging.getLogger(__name__)
@@ -122,15 +123,48 @@ class RoutingManager:
         self.config.save_config('routing.json', routing)
         logger.info('Cleared all domain rules')
 
+    def _append_field_rule(self, rules: list, rule: str, outbound_tag: str) -> None:
+        """把一条列表规则字符串追加为 Xray field 规则。
+
+        - `geosite:` / `domain:` / `regexp:` 前缀 → domain 字段；
+        - `geoip:` 前缀或裸 IP / CIDR → ip 字段；
+        - 裸域名（无前缀）：按 domain 处理（Xray 裸域名即主域名匹配，
+          含子域名），但打 warning 提示补前缀——避免规则被静默丢弃、
+          流量意外落兜底导致「以为走了代理、实际直连」。
+        """
+        if rule.startswith(('geosite:', 'domain:', 'regexp:')):
+            rules.append({'type': 'field', 'domain': [rule], 'outboundTag': outbound_tag})
+            return
+        if rule.startswith('geoip:'):
+            rules.append({'type': 'field', 'ip': [rule], 'outboundTag': outbound_tag})
+            return
+        try:
+            ipaddress.ip_network(rule, strict=False)
+            rules.append({'type': 'field', 'ip': [rule], 'outboundTag': outbound_tag})
+            return
+        except ValueError:
+            pass
+        logger.warning(
+            f'{outbound_tag} rule {rule!r} has no prefix (domain:/geoip:/geosite:); '
+            f'treating it as a domain rule, consider adding the "domain:" prefix')
+        rules.append({'type': 'field', 'domain': [rule], 'outboundTag': outbound_tag})
+
     def generate_xray_routing_rules(self) -> dict:
         """Generate xray-compatible routing rules and domain outbound mappings.
-        
+
+        proxy_all=True（默认，全局代理）：除 block_list / direct_list 明确
+        列出的流量外，其余全部走代理，末尾显式加「未匹配兜底走代理」规则，
+        不依赖 Xray 的默认 outbound 行为，从机制上杜绝直连泄漏；
+        proxy_all=False（白名单分流）：只有 proxy_list 列出的走代理，
+        未匹配流量兜底直连。
+
         Returns:
             dict with keys:
                 - 'rules': list of xray routing rules
                 - 'domain_outbounds': list of (domains, node_id) tuples for extra outbounds
         """
         routing = self.config.load_config('routing.json')
+        proxy_all = routing.get('proxy_all', True)
         rules = []
 
         # Domain-to-node mapping rules (highest priority, placed first)
@@ -148,36 +182,15 @@ class RoutingManager:
 
         # Block rules
         for rule in routing.get('block_list', []):
-            if rule.startswith('geosite:'):
-                rules.append({
-                    'type': 'field',
-                    'domain': [rule],
-                    'outboundTag': 'block'
-                })
+            self._append_field_rule(rules, rule, 'block')
 
         # Proxy rules (must come before direct rules to take priority)
         for rule in routing.get('proxy_list', []):
-            if rule.startswith('geosite:'):
-                rules.append({
-                    'type': 'field',
-                    'domain': [rule],
-                    'outboundTag': 'proxy'
-                })
-            elif rule.startswith('domain:'):
-                rules.append({
-                    'type': 'field',
-                    'domain': [rule],
-                    'outboundTag': 'proxy'
-                })
+            self._append_field_rule(rules, rule, 'proxy')
 
         # Direct rules
         for rule in routing.get('direct_list', []):
-            tag = 'domain' if rule.startswith('geosite:') else 'ip'
-            rules.append({
-                'type': 'field',
-                tag: [rule],
-                'outboundTag': 'direct'
-            })
+            self._append_field_rule(rules, rule, 'direct')
 
         # Custom rules
         for rule in routing.get('rules', []):
@@ -194,6 +207,22 @@ class RoutingManager:
                 field['type'] = 'field'
                 field['outboundTag'] = outbound_tag
                 rules.append(field)
+                # 全局代理模式下，自定义规则里的全量直连兜底（0.0.0.0/0）
+                # 会先于代理兜底拦截所有流量，提示用户其与 proxy_all 冲突。
+                if proxy_all and outbound_tag == 'direct' and '0.0.0.0/0' in rule.get('ip', []):
+                    logger.warning(
+                        'Custom direct rule 0.0.0.0/0 overrides proxy_all=true: '
+                        'all unmatched traffic goes direct. Remove that rule or '
+                        'set proxy_all=false to use whitelist routing')
+
+        # Fallback rule: unmatched traffic goes to proxy (global) or direct (whitelist).
+        # Must carry a real condition (network) — Xray rejects rules with no
+        # effective fields ("this rule has no effective fields") and fails to start.
+        rules.append({
+            'type': 'field',
+            'network': 'tcp,udp',
+            'outboundTag': 'proxy' if proxy_all else 'direct',
+        })
 
         return {
             'rules': rules,

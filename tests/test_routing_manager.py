@@ -1,5 +1,7 @@
 """Tests for RoutingManager module."""
 
+import logging
+
 import pytest
 
 from xpilot.config import Config
@@ -108,3 +110,47 @@ class TestRoutingManager:
         assert 'github.com' in domains
         assert node_id == 'github_node'
         assert tag == 'proxy_github_node'
+
+    # ===== proxy_all tests =====
+
+    def test_proxy_all_default_global(self, manager):
+        """测试：默认 proxy_all=true（全局代理），末尾有兜底走代理规则。"""
+        result = manager.generate_xray_routing_rules()
+        assert result['rules'][-1] == {
+            'type': 'field', 'network': 'tcp,udp', 'outboundTag': 'proxy'}
+
+    def test_proxy_all_missing_field_defaults_to_global(self, manager, config):
+        """测试：旧配置缺 proxy_all 字段时按全局代理处理。"""
+        routing = config.load_config('routing.json')
+        routing.pop('proxy_all')
+        config.save_config('routing.json', routing)
+        result = manager.generate_xray_routing_rules()
+        assert result['rules'][-1] == {
+            'type': 'field', 'network': 'tcp,udp', 'outboundTag': 'proxy'}
+
+    def test_proxy_all_false_whitelist(self, manager, config):
+        """测试：proxy_all=false（白名单分流），末尾兜底直连。"""
+        routing = config.load_config('routing.json')
+        routing['proxy_all'] = False
+        config.save_config('routing.json', routing)
+        result = manager.generate_xray_routing_rules()
+        assert result['rules'][-1] == {
+            'type': 'field', 'network': 'tcp,udp', 'outboundTag': 'direct'}
+
+    def test_proxy_all_bare_domain_kept(self, manager):
+        """测试：裸域名规则不再被静默丢弃，按 domain 规则生效。"""
+        manager.add_proxy_rule('openapi.tigerfintech.com')
+        result = manager.generate_xray_routing_rules()
+        domain_rules = [r for r in result['rules']
+                        if r.get('domain') == ['openapi.tigerfintech.com']]
+        assert domain_rules, '裸域名规则应被保留为 domain 规则'
+        assert domain_rules[0]['outboundTag'] == 'proxy'
+
+    def test_proxy_all_conflict_warning(self, manager, config, caplog):
+        """测试：全局代理模式下自定义 0.0.0.0/0 直连兜底规则触发 warning。"""
+        routing = config.load_config('routing.json')
+        routing['rules'] = [{'type': 'direct', 'ip': ['0.0.0.0/0', '::/0']}]
+        config.save_config('routing.json', routing)
+        with caplog.at_level(logging.WARNING):
+            manager.generate_xray_routing_rules()
+        assert any('overrides proxy_all' in r.message for r in caplog.records)
