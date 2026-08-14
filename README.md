@@ -3,7 +3,7 @@
 
   <p>
     <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-    <img src="https://img.shields.io/badge/Version-v0.5.1-blue" alt="Version: 0.5.1">
+    <img src="https://img.shields.io/badge/Version-v0.6.0-blue" alt="Version: 0.6.0">
     <img src="https://img.shields.io/badge/Type-Python%20CLI-blue" alt="Type: Python CLI">
   </p>
 

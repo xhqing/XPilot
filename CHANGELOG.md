@@ -4,20 +4,26 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.5.1] - 未发布
+## [0.6.0] - 2026-08-14
 
 ### 新增
 
 - `routing.json` 新增 `proxy_all` 字段并**默认启用全局代理**（`true`）：除 `direct_list` / `block_list` 明确列出的流量外，其余全部走代理——生成 Xray 路由规则时在末尾显式加「未匹配兜底走代理」规则（带 `network: tcp,udp` 条件；Xray 拒绝无有效字段的规则，实测 26.1.18 报 `this rule has no effective fields` 直接拒绝启动），不再依赖 Xray「未匹配走第一个 outbound」的默认行为，从机制上杜绝「以为走了代理、实际直连」的泄漏。**为什么**：2026-08-14 排查老虎证券实盘下单被 code=1200 拒（监管按指令网络环境判定、需境外出口），发现路由配置是白名单分流且 `rules` 里有一条 `0.0.0.0/0 → direct` 的兜底直连规则，任何漏配 / 写错的规则都会让流量直连；用户以为白名单已生效、实际流量一直走境内出口。`proxy_all: false` 为白名单分流模式：只有 `proxy_list` 列出的走代理，未匹配流量兜底直连。
 - 路由规则格式识别容错：`proxy_list` / `direct_list` / `block_list` 里的**裸域名（无 `geosite:` / `domain:` 前缀）不再被静默丢弃**——自动按 domain 规则生效（Xray 裸域名即主域名匹配），并在日志打 warning 提示补前缀。**为什么**：此前裸域名两个前缀分支都不进、规则静默消失，正是老虎域名规则「从未落地」的根因之一；顺带把同因的 `geoip:` / 裸 IP / CIDR 识别为 ip 字段（此前会被误放进 domain 或当 ip 处理）。
 - 全局代理模式下的冲突检测：`rules` 自定义规则里残留全量直连兜底（`ip: ["0.0.0.0/0"]` 且 `type: "direct"`）时，xpilot 启动日志打 warning 提示该规则会使全部流量直连、与 `proxy_all` 冲突。
+- 新增 `tests/test_cli.py`（monitor 守护进程清理逻辑 4 个用例：多代全清、空场景、pgrep 失败降级、不误杀自身），`tests/test_routing_manager.py` 补充 proxy_all 相关测试。
 
 ### 变更
 
 - `xpilot/config.py` 默认 routing 配置（`xpilot init` 生成的）新增 `proxy_all: true`；`config/routing.example.json` 模板 `proxy_all` 由 `false` 改为 `true`。
 - `xpilot/routing_manager.py`：`generate_xray_routing_rules` 读取 `proxy_all`（缺字段时按 `true` 处理，老配置自动获得全局代理语义）并生成对应兜底规则。
 - `README.md` / `README_cn.md`：新增「routing.json 字段说明」章节，含 `proxy_all` 两种模式语义、各列表支持的规则格式、以及全局代理模式与自定义直连兜底规则的冲突提示。
-- `xpilot/cli.py`：monitor 守护进程清理从「只按 PID 文件杀最后一个」改为「按命令行匹配清理全部」（新增 `_kill_all_monitors`，`_stop_monitor_daemon` 与 `_spawn_monitor_daemon` 均走它）。**为什么**：`start` / `restart` 每次都 spawn 新 monitor、`stop` 只杀 PID 文件记录的一个，旧 monitor 多代残留——8-02、8-07 两代旧 monitor 用旧代码反复写 xray 配置、拉起 xray，覆盖新配置导致 2026-08-14 全局代理改动不生效，手动全清后才生效。修复后 spawn 前 / stop 时一律清掉所有现存 monitor（pgrep 按 `xpilot.cli monitor` 命令行匹配，排除自身，SIGTERM + SIGKILL 兜底），杜绝多代并存。新增 `tests/test_cli.py` 覆盖清理逻辑（多代全清、空场景、pgrep 失败降级、不误杀自身）。
+- `xpilot/cli.py`：monitor 守护进程清理从「只按 PID 文件杀最后一个」改为「按命令行匹配清理全部」（新增 `_kill_all_monitors`，`_stop_monitor_daemon` 与 `_spawn_monitor_daemon` 均走它）。**为什么**：`start` / `restart` 每次都 spawn 新 monitor、`stop` 只杀 PID 文件记录的一个，旧 monitor 多代残留——8-02、8-07 两代旧 monitor 用旧代码反复写 xray 配置、拉起 xray，覆盖新配置导致 2026-08-14 全局代理改动不生效，手动全清后才生效。修复后 spawn 前 / stop 时一律清掉所有现存 monitor（pgrep 按 `xpilot.cli monitor` 命令行匹配，排除自身，SIGTERM + SIGKILL 兜底），杜绝多代并存。
+
+## [0.5.1] - 2026-08-13
+
+### 变更
+
 - 撤销 2026-08-08 的 Agent 化重构（原记录于 0.6.0 未发布条目，该条目已移除），项目恢复为独立的 **XPilot 工具项目**。**为什么**：Agent 化重构把工具塞进 `XPilot/` 子目录、仓库与目录改名 `NetOpsAgent`，实际使用中发现工具独立成库更合适——恢复原目录布局与仓库名，Agent 定位（Hermes / NetOpsAgent）拆到独立仓库 `xhqing/NetOpsAgent`。工具功能、命令名（仍为 `xpilot`）、包名均不受影响。
 - 目录布局恢复：`XPilot/` 子目录内容全部移回仓库根目录（代码、配置、测试、Docker、README / CHANGELOG / VERSION / LICENSE、`.gitignore`）；删除根目录 Agent 层文档（Hermes 定位 README、`.claude/`、`.codebuddy/`、Agent 版 CHANGELOG / VERSION / assets logo）。
 - `README.md` / `README_cn.md`：去除 Hermes / 子项目表述，恢复独立工具文档；GitHub 链接、徽章 URL 改回 `xhqing/XPilot`。
