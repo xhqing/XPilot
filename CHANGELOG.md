@@ -6,6 +6,11 @@
 
 ## [0.6.1] - 2026-10-09
 
+### 修复（发布资产空壳：包目录索引路径大小写导致 Linux 构建未纳入代码，0.6.1 起修复）
+
+- **为什么改**：v0.5.1 / v0.6.0 的 Release 产物（wheel 与 sdist）内没有任何代码——wheel 仅剩 dist-info 元数据、0 个模块文件，sdist 不含 `xpilot/` 包。根因：0.5.1 目录迁移把 git 索引中包目录的路径记成了大写 `XPilot/`（macOS 大小写不敏感、本地无感），而 `pyproject.toml` 的 `[tool.setuptools.packages.find] include = ["xpilot*"]` 按大小写敏感匹配——Linux CI 检出 `XPilot/` 匹配不到包，产物即空壳；`xpilot --update` / `rollback` 装到空壳会使工具不可用。v0.5.0 及以前产物正常。
+- **改了什么**：索引路径改回小写 `xpilot/`（11 个文件、纯重命名、内容零改动）。修复已实证：大小写敏感卷复现空壳 wheel → 重命名后重建（11 个包文件全部入 wheel、`top_level.txt` 与入口点正常）→ 干净 venv 冒烟安装 `xpilot --version` 正常。v0.5.1 / v0.6.0 的旧空壳资产不重建、不替换，在 0.6.1 的 Release notes 中提示使用 0.6.1 及以上。
+
 ### 修复（TODO / MEMO 编号加粗脚本截断事故：批量脚本切片 bug 把条目正文截空，从多恢复源全量重建）
 
 - **为什么改**：上一条「全量补编号」执行时，第二步「编号加粗」脚本存在切片 bug（`m.group(0)[m.end(3)+1:]` 起点算错），把所有被匹配条目的正文截成空壳（只剩 `- [ ] **Tn** `），共波及 1 个文件 2 条。发现后立即启动恢复（无 Time Machine / APFS 快照可用）。
