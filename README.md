@@ -5,6 +5,7 @@
     <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <img src="https://img.shields.io/badge/Version-v0.6.0-blue" alt="Version: 0.6.0">
     <img src="https://img.shields.io/badge/Type-Python%20CLI-blue" alt="Type: Python CLI">
+  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/XPilot.json" alt="Visits/day (14d)" />
   </p>
 
   <p>
