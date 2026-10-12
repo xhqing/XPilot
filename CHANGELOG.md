@@ -4,7 +4,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.6.2] - 2026-10-12
 
 ### 移除（智能体专属文件清理：删除根 `CLAUDE.md` 与 `.claude/CLAUDE.md`，按 2026-10-12 全局新规）
 
