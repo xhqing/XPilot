@@ -4,6 +4,13 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 移除（智能体专属文件清理：删除根 `CLAUDE.md` 与 `.claude/CLAUDE.md`，按 2026-10-12 全局新规）
+
+- **为什么改**：用户 2026-10-12 修订全局规则（细则见 `~/.claude/docs/agents-registry.md`「智能体专属文件归属与子项目映射」节，取代原「子项目 `.claude/` 超集」规则）——`CLAUDE.md` / `AGENTS.md` / `.claude/` / 项目级 `.pi/` 等「会话启动时按工作目录加载、表征智能体身份」的项目级文件只有 Agent 项目允许拥有，非 Agent 项目（含子项目）一律不得存在；Hermes 对本仓的工作统一在 NetOpsAgent 项目会话里按路径处理，后台会话以 NetOpsAgent 根目录为工作目录。
+- **改了什么**：① 删除根 `CLAUDE.md`（2026-07-22 版 commit-skill 检测缓存 + 跳过项说明；缓存载体早已迁移到 `.commit-cache.md` 且标记齐全，无信息丢失）；② 删除 `.claude/CLAUDE.md`（XPilot 侧的 Hermes 简介 + NetOpsAgent 权威文档随附副本；其中「XPilot 由 Hermes 维护 / 工具定位 / 命令名向后兼容」等信息保留于 NetOpsAgent `CLAUDE.md` 与两版 README）并移除空的 `.claude/` 目录。清理后本仓不含任何智能体专属文件。
+
 ## [0.6.1] - 2026-10-09
 
 ### 修复（发布资产空壳：包目录索引路径大小写导致 Linux 构建未纳入代码，0.6.1 起修复）
