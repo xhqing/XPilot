@@ -4,6 +4,13 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 变更（Agent 进驻子项目：根目录新增 `AGENTS.md` 与 `.pi` 两条指向 NetOpsAgent 的软链接）
+
+- **为什么改**：用户 2026-10-17 修订全局规则（细则见 `~/.claude/docs/agents-registry.md`「智能体专属文件归属与子项目映射」节，取代 2026-10-12 的「子项目一律不得存在」）：智能体专属文件的**实体只在 Agent 项目**；子项目根目录挂两条相对路径软链接指回负责 Agent，在子项目目录直接开会话即继承 Hermes 的身份 / 规则 / 技能（「Agent 进驻子项目」），链接随仓库提交（仓库主要作本人备份，单独 clone 时链接悬空无害）。
+- **改了什么**：本仓根目录新增两条相对路径软链接——`AGENTS.md → ../NetOpsAgent/AGENTS.md`、`.pi → ../NetOpsAgent/.pi`；不新增任何智能体专属文件的实体副本。后台会话仍只以 NetOpsAgent 根目录为工作目录，本仓工作按路径跨目录处理。
+
 ## [0.6.2] - 2026-10-12
 
 ### 移除（智能体专属文件清理：删除根 `CLAUDE.md` 与 `.claude/CLAUDE.md`，按 2026-10-12 全局新规）
