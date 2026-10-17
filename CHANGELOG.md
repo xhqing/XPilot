@@ -4,7 +4,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.6.3] - 2026-10-17
 
 ### 变更（Agent 进驻子项目：根目录新增 `AGENTS.md` 与 `.pi` 两条指向 NetOpsAgent 的软链接）
 
