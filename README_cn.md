@@ -739,6 +739,22 @@ xpilot config reset -f
 | `routing.json` | 路由规则（代理/直连/拦截列表） |
 | `settings.json` | 全局设置（端口、xray 路径、自动切换等） |
 
+### 运行状态文件（`run/`）
+
+PID 文件、运行时 xray 配置与 xray 日志放在 `<配置目录>/run/` 下（默认 `~/.config/xpilot/run/`，权限 `0700`——运行时配置里有节点凭据），**不再放 `/tmp`**：
+
+| 文件 | 用途 |
+|------|------|
+| `run/xpilot.pid` | xray 主进程 PID |
+| `run/xray-config.json` | 运行中实例实际使用的 xray 配置（用于诊断「跑的是哪份配置」） |
+| `run/xray-stdout.log` / `run/xray-stderr.log` | xray 进程标准输出 / 标准错误 |
+| `run/auto-switch.pid` | 自动切换监控进程 PID |
+| `run/xpilot-monitor.log` / `run/xpilot-monitor.err` | launchd 托管的 monitor 输出 |
+
+为什么迁出 `/tmp`：临时目录会被系统定期清理。清理后 xray 进程仍在跑、端口仍在监听，但状态文件没了——曾经因此出现「`xpilot status` 显示已停止、实际仍在运行」的状态错位，监控不干预、境外访问静默超时多日（Issue #1）。现在状态判定不再只凭 PID 文件：PID 文件缺失或失效时，用端口监听 + 进程名交叉校验兜底，确认在跑还会把 PID 文件补写回去；`xpilot status` 会如实标出「状态来源：按端口恢复」。
+
+程序自身日志默认写到 `<配置目录>/logs/xpilot.log`，可用 `settings.json` 的 `log_file` 改。从 0.6.x 升级时，旧默认值 `/tmp/xpilot.log` 会被自动迁移到新默认路径（自定义路径不受影响）。
+
 ### 配置方法
 
 - **初始化**：运行 `xpilot init` 会在 `~/.config/xpilot/` 生成上述三个默认配置文件；加 `-f` 可强制覆盖已有配置。
@@ -762,7 +778,7 @@ xpilot config show          # 查看当前配置
   "socks_port": 1080,
   "http_port": 1087,
   "log_level": "warning",
-  "log_file": "/tmp/xpilot.log",
+  "log_file": "~/.config/xpilot/logs/xpilot.log",
   "auto_switch": {
     "enabled": true,
     "interval": 300,
@@ -823,15 +839,15 @@ xpilot 会把运行日志写入文件，便于在代理异常时定位问题。�
 
 | 日志文件 | 内容 | 说明 |
 |----------|------|------|
-| `/tmp/xpilot.log` | xpilot 自身日志 | 记录代理启停、自动切换、健康检查等；后台守护进程的输出也写在这里。路径由 `settings.json` 的 `log_file` 字段控制 |
-| `/tmp/xpilot-xray-stdout.log` | xray 进程标准输出 | 排查 xray 启动、协议握手等问题 |
-| `/tmp/xpilot-xray-stderr.log` | xray 进程标准错误 | xray 报错最先出现在这里 |
+| `<配置目录>/logs/xpilot.log` | xpilot 自身日志 | 记录代理启停、自动切换、健康检查等；后台守护进程的输出也写在这里。路径由 `settings.json` 的 `log_file` 字段控制（默认 `~/.config/xpilot/logs/xpilot.log`） |
+| `<配置目录>/run/xray-stdout.log` | xray 进程标准输出 | 排查 xray 启动、协议握手等问题 |
+| `<配置目录>/run/xray-stderr.log` | xray 进程标准错误 | xray 报错最先出现在这里 |
 
 查看日志：
 
 ```bash
-cat /tmp/xpilot.log                  # xpilot 自身日志
-tail -f /tmp/xpilot-xray-stderr.log  # 实时跟踪 xray 报错
+cat ~/.config/xpilot/logs/xpilot.log                  # xpilot 自身日志
+tail -f ~/.config/xpilot/run/xray-stderr.log          # 实时跟踪 xray 报错
 ```
 
 需要更详细的信息时，把日志级别调到 `debug`：
@@ -846,8 +862,8 @@ xpilot config set log_level debug
 
 - 确认 xray 已正确安装：`which xray`
 - 检查端口是否被占用
-- 查看 xray 报错日志：`cat /tmp/xpilot-xray-stderr.log`
-- 查看 xpilot 自身日志：`cat /tmp/xpilot.log`
+- 查看 xray 报错日志：`cat ~/.config/xpilot/run/xray-stderr.log`
+- 查看 xpilot 自身日志：`cat ~/.config/xpilot/logs/xpilot.log`
 
 ### Q: 系统代理无法设置？
 

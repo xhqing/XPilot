@@ -2,6 +2,7 @@
 
 import os
 import json
+import re
 import signal
 import subprocess
 import logging
@@ -34,19 +35,48 @@ class ConfigError(ProxyError):
 class ProxyManager:
     """Manage xray proxy service."""
 
-    PID_FILE = '/tmp/xpilot.pid'
+    # 旧版本的 PID 文件位置（只读识别：升级前拉起的实例可能还把 PID 留在这里。
+    # 新版本不再写入该路径，仅由 probe_runtime 以端口探测接管）。
+    LEGACY_PID_FILE = '/tmp/xpilot.pid'
 
     def __init__(self, config, node_manager, routing_manager=None):
+        from .utils import get_runtime_dir
+
         self.config = config
         self.node_manager = node_manager
         self.routing_manager = routing_manager
         self._process = None
 
+        # 运行状态文件（PID / 运行配置 / 日志）不进 /tmp：临时目录被系统清理后
+        # 会出现「xray 还在跑、工具显示 Stopped」的状态错位与静默断网（Issue #1）。
+        self.runtime_dir = get_runtime_dir(getattr(config, 'config_dir', None))
+        self.pid_file = os.path.join(self.runtime_dir, 'xpilot.pid')
+        self.runtime_config_path = os.path.join(self.runtime_dir, 'xray-config.json')
+        self.stdout_log_path = os.path.join(self.runtime_dir, 'xray-stdout.log')
+        self.stderr_log_path = os.path.join(self.runtime_dir, 'xray-stderr.log')
+
     def start(self, node_id: str = None) -> bool:
         """Start proxy service with specified node."""
-        if self.is_running():
-            logger.warning('Proxy is already running')
-            return True
+        state = self.probe_runtime()
+        if state['running']:
+            # 孤儿 / 多实例处置：宁可拒绝启动，也不让两个 xray 同时抢同一个端口
+            # （SO_REUSEPORT 下两个实例能同时 bind 成功，连接随机落到不同实例）。
+            if len(state['pids']) > 1:
+                pid_text = ', '.join(str(p) for p in state['pids'])
+                raise ProxyStartError(
+                    f'检测到多个 xray 实例同时监听本工具端口（PIDs: {pid_text}），'
+                    '为避免端口争用不再启动新实例；请先执行 xpilot stop 清理后重新 start'
+                )
+            current = node_id or self.node_manager.get_default_node()
+            node_name = current
+            if current:
+                try:
+                    node_name = self.node_manager.get_node(current).get('name', current)
+                except Exception:
+                    node_name = current
+            logger.warning(
+                f'Proxy is already running (PID: {state["pid"]}, detected via {state["source"]})')
+            return node_name or True
 
         if node_id is None:
             node_id = self.node_manager.get_default_node()
@@ -82,8 +112,9 @@ class ProxyManager:
         """Start xray for non-SS protocols."""
         xray_config = self.generate_xray_config(node)
 
-        # Write xray config to temp file
-        xray_config_path = '/tmp/xpilot-xray.json'
+        # 运行配置连同 PID 一起落在 runtime 目录（不再随 /tmp 被清理）：
+        # 它既是 xray 的启动参数，也是「运行中的实例用的是哪份配置」的诊断依据。
+        xray_config_path = self.runtime_config_path
         with open(xray_config_path, 'w') as f:
             json.dump(xray_config, f, indent=2)
 
@@ -91,9 +122,8 @@ class ProxyManager:
         if not os.path.exists(xray_bin):
             raise ProxyStartError(f'Xray binary not found: {xray_bin}')
 
-        # Write stdout and stderr to temp files for error capture
-        stdout_file = '/tmp/xpilot-xray-stdout.log'
-        stderr_file = '/tmp/xpilot-xray-stderr.log'
+        stdout_file = self.stdout_log_path
+        stderr_file = self.stderr_log_path
 
         with open(stdout_file, 'w') as stdout_f, open(stderr_file, 'w') as stderr_f:
             self._process = subprocess.Popen(
@@ -105,8 +135,7 @@ class ProxyManager:
             )
 
         # Save PID
-        with open(self.PID_FILE, 'w') as f:
-            f.write(str(self._process.pid))
+        self._write_pid_file(self._process.pid)
 
         # Quick check that the daemon is still running
         time.sleep(1)
@@ -134,24 +163,24 @@ class ProxyManager:
         Args:
             force: If True, also kill any xray process using the ports
         """
-        if self.is_running():
-            pid = self._get_pid()
-            if pid:
+        state = self.probe_runtime()
+        pids = list(state['pids'])
+        if state['pid'] and state['pid'] not in pids:
+            pids.append(state['pid'])
+        if state['running'] or pids:
+            for pid in pids:
                 try:
                     os.killpg(os.getpgid(pid), signal.SIGTERM)
-                    time.sleep(1)
-                    # Force kill if still running
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except OSError:
-                        pass
-                except OSError as e:
-                    logger.error(f'Failed to stop xray: {e}')
-                    raise ProxyStopError(f'Failed to stop proxy: {e}')
-
-            # Clear PID file
-            if os.path.exists(self.PID_FILE):
-                os.remove(self.PID_FILE)
+                except OSError:
+                    pass
+            time.sleep(1)
+            # Force kill if still running
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            self._remove_pid_file()
             self._process = None
 
         # Also kill any xray process that might be holding our ports
@@ -199,11 +228,17 @@ class ProxyManager:
 
     def get_status(self) -> dict:
         """Get proxy service status."""
-        running = self.is_running()
+        state = self.probe_runtime()
+        running = state['running']
         status = {
             'running': running,
-            'pid': self._get_pid() if running else None,
+            'pid': state['pid'],
             'current_node': self.node_manager.get_default_node(),
+            'source': state['source'],
+            'warnings': list(state['warnings']),
+            'runtime_dir': self.runtime_dir,
+            'config_stale': None,
+            'config_stale_detail': None,
         }
 
         if running:
@@ -216,7 +251,60 @@ class ProxyManager:
             except Exception:
                 status['node_name'] = ''
 
+            # 运行实例是否还在用「当前默认节点」的配置：订阅刷新 / 节点变更后，
+            # 内存里的旧配置不会自动生效，必须显式提示 restart（Issue #1 建议 4）。
+            matched, detail = self.running_config_matches_current()
+            status['config_stale'] = matched
+            status['config_stale_detail'] = detail
+
         return status
+
+    def running_config_matches_current(self):
+        """运行中实例用的配置与当前默认节点是否一致。
+
+        返回 ``(matched, detail)``：``True`` = 一致，``False`` = 不一致
+        （需要 restart 才生效），``None`` = 无法判定（运行配置缺失 / 无默认节点）。
+        """
+        if not os.path.exists(self.runtime_config_path):
+            return None, '运行时配置缺失，无法确认运行实例所用的节点'
+        try:
+            with open(self.runtime_config_path, 'r') as f:
+                runtime_config = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            return None, f'运行时配置无法解析: {e}'
+
+        endpoint = self._config_proxy_endpoint(runtime_config)
+        if not endpoint:
+            return None, '运行时配置里没有可识别的代理出站节点'
+
+        node_id = self.node_manager.get_default_node()
+        if not node_id:
+            return None, '未设置默认节点，无法比对运行实例所用配置'
+        try:
+            node = self.node_manager.get_node(node_id)
+        except Exception:
+            return None, f'默认节点 {node_id} 不存在，无法比对运行实例所用配置'
+
+        running_endpoint = f'{endpoint[0]}:{endpoint[1]}'
+        current_endpoint = f'{node.get("address")}:{node.get("port")}'
+        if running_endpoint == current_endpoint:
+            return True, f'运行实例使用 {running_endpoint}，与当前默认节点一致'
+        return False, (f'运行实例仍使用 {running_endpoint}，当前默认节点为 '
+                       f'{current_endpoint}，需执行 xpilot restart 才能生效')
+
+    @staticmethod
+    def _config_proxy_endpoint(config: dict):
+        """从 xray 配置里取首个代理出站的 ``(address, port)``。"""
+        for outbound in config.get('outbounds') or []:
+            if not isinstance(outbound, dict):
+                continue
+            if outbound.get('protocol') in ('freedom', 'blackhole'):
+                continue
+            settings = outbound.get('settings') or {}
+            for entry in (settings.get('vnext') or []) + (settings.get('servers') or []):
+                if isinstance(entry, dict) and entry.get('address'):
+                    return entry['address'], entry.get('port')
+        return None
 
     def generate_xray_config(self, node: dict) -> dict:
         """Generate xray configuration JSON."""
@@ -384,27 +472,153 @@ class ProxyManager:
         set_macos_proxy(enable, socks_port, http_port, bypass_local)
 
     def is_running(self) -> bool:
-        """Check if proxy is running."""
-        pid = self._get_pid()
-        if pid is None:
-            return False
+        """Check if proxy is running.
+
+        不能只凭 PID 文件判定：/tmp 被清理后 PID 文件消失、而 xray 仍在跑，
+        只看 PID 文件会把「运行中」误判成「已停止」（Issue #1 的真实事故）。
+        判定交给 :meth:`probe_runtime`：PID 文件失效时用端口监听 + 进程名交叉校验。
+        """
+        return self.probe_runtime()['running']
+
+    def probe_runtime(self) -> dict:
+        """探测 xray 实例的真实运行状态（PID 文件 + 端口监听交叉校验）。
+
+        返回 ``{'running', 'pid', 'pids', 'source', 'warnings'}``：
+
+        - ``source='pidfile'``：PID 文件有效且进程确为 xray；
+        - ``source='port'``：PID 文件缺失 / 失效，但本工具端口上有 xray 在监听
+          （同时把 PID 回写到 runtime 目录，自愈）；
+        - ``source=None``：两条证据都不成立，确实没在跑。
+        """
+        ports = self._configured_ports()
+        warnings = []
+
+        pid = self._read_pid_file()
+        if pid is not None:
+            if self._pid_alive(pid) and self._process_is_xray(pid):
+                listeners = self._xray_pids_listening(ports)
+                pids = [pid] + [p for p in listeners if p != pid]
+                if len(pids) > 1:
+                    warnings.append(self._multiple_instances_warning(pids))
+                return {'running': True, 'pid': pid, 'pids': pids,
+                        'source': 'pidfile', 'warnings': warnings}
+            # PID 文件失效（进程已死 / PID 被别的进程复用）：清掉，继续用端口探测兜底。
+            self._remove_pid_file()
+
+        listeners = self._xray_pids_listening(ports)
+        if listeners:
+            primary = listeners[0]
+            self._write_pid_file(primary)
+            if len(listeners) > 1:
+                warnings.append(self._multiple_instances_warning(listeners))
+            logger.info(
+                f'PID 文件缺失或失效，已按端口监听恢复运行状态（PID: {primary}）')
+            return {'running': True, 'pid': primary, 'pids': list(listeners),
+                    'source': 'port', 'warnings': warnings}
+
+        return {'running': False, 'pid': None, 'pids': [],
+                'source': None, 'warnings': warnings}
+
+    @staticmethod
+    def _multiple_instances_warning(pids) -> str:
+        pid_text = ', '.join(str(p) for p in pids)
+        return (f'检测到多个 xray 实例同时监听本工具端口（PIDs: {pid_text}），'
+                '请执行 xpilot stop 清理后重新 start')
+
+    def _configured_ports(self) -> list:
+        """本工具占用的端口（socks / http），用于运行状态交叉校验。"""
+        try:
+            settings = self.config.load_config('settings.json')
+        except Exception:
+            settings = {}
+        return [settings.get('socks_port', 1080), settings.get('http_port', 1087)]
+
+    def _xray_pids_listening(self, ports) -> list:
+        """返回在给定端口上监听、且进程名确为 xray 的 PID 列表。"""
+        found = []
+        for port in ports:
+            for pid in self._listener_pids(port):
+                if pid not in found and self._process_is_xray(pid):
+                    found.append(pid)
+        return found
+
+    @staticmethod
+    def _listener_pids(port) -> list:
+        """端口上的监听进程 PID（lsof 优先，Linux 退化到 ss）。"""
+        pids = []
+        try:
+            result = subprocess.run(
+                ['lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN', '-t'],
+                capture_output=True, text=True, timeout=3)
+            pids = [int(p) for p in result.stdout.split() if p.strip().isdigit()]
+        except FileNotFoundError:
+            try:
+                result = subprocess.run(
+                    ['ss', '-ltnpH', f'sport = :{port}'],
+                    capture_output=True, text=True, timeout=3)
+                pids = [int(m) for m in re.findall(r'pid=(\d+)', result.stdout or '')]
+            except Exception:
+                pids = []
+        except Exception:
+            pids = []
+        return pids
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
         try:
             os.kill(pid, 0)
             return True
         except OSError:
-            # Clean up stale PID file
-            if os.path.exists(self.PID_FILE):
-                os.remove(self.PID_FILE)
             return False
+
+    @staticmethod
+    def _process_is_xray(pid: int) -> bool:
+        """进程名是否为 xray（防 PID 复用把别的进程当成本工具拉起的 xray）。"""
+        comm = ''
+        try:
+            result = subprocess.run(
+                ['ps', '-p', str(pid), '-o', 'comm='],
+                capture_output=True, text=True, timeout=3)
+            comm = (result.stdout or '').strip()
+        except Exception:
+            comm = ''
+        if not comm:
+            try:
+                with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                    comm = f.read().decode(errors='ignore').replace('\0', ' ').strip()
+            except OSError:
+                return False
+        if not comm:
+            return False
+        first = comm.split()[0]
+        return 'xray' in os.path.basename(first).lower()
+
+    def _read_pid_file(self):
+        try:
+            with open(self.pid_file, 'r') as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    def _write_pid_file(self, pid: int) -> None:
+        try:
+            os.makedirs(self.runtime_dir, exist_ok=True)
+            tmp_path = f'{self.pid_file}.tmp'
+            with open(tmp_path, 'w') as f:
+                f.write(str(pid))
+            os.replace(tmp_path, self.pid_file)
+        except OSError as e:
+            logger.warning(f'写 PID 文件失败: {e}')
+
+    def _remove_pid_file(self) -> None:
+        try:
+            if os.path.exists(self.pid_file):
+                os.remove(self.pid_file)
+        except OSError:
+            pass
 
     def _get_pid(self) -> int:
         """Get proxy process PID."""
         if self._process and self._process.poll() is None:
             return self._process.pid
-        if os.path.exists(self.PID_FILE):
-            try:
-                with open(self.PID_FILE, 'r') as f:
-                    return int(f.read().strip())
-            except (ValueError, IOError):
-                pass
-        return None
+        return self.probe_runtime()['pid']

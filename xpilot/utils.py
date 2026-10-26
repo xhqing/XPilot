@@ -35,6 +35,40 @@ def get_config_dir() -> str:
     return config_dir
 
 
+def get_runtime_dir(config_dir: str = None) -> str:
+    """Get the runtime state directory (PID file, generated xray config, logs).
+
+    Runtime state used to live in ``/tmp``, which the system may purge at any
+    time. When ``/tmp/xpilot.pid`` disappeared while xray kept running, status
+    checks reported "stopped" and the proxy failed silently for days (see
+    Issue #1). State now lives next to the persistent config instead:
+
+    Precedence: ``$PROXY_TOOLKIT_RUNTIME_DIR`` → ``$PROXY_TOOLKIT_CONFIG_DIR/run``
+    → ``<config_dir>/run`` → ``get_config_dir()/run``.
+
+    The directory is created on demand with mode ``0700``: it holds the PID
+    file and the xray runtime config, which in turn contains node credentials.
+    """
+    override = os.environ.get('PROXY_TOOLKIT_RUNTIME_DIR')
+    if override:
+        path = os.path.abspath(override)
+    else:
+        base = os.environ.get('PROXY_TOOLKIT_CONFIG_DIR') or config_dir
+        if base:
+            base = os.path.abspath(base)
+        else:
+            base = get_config_dir()
+        path = os.path.join(base, 'run')
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        # The directory may pre-exist with looser permissions; state files are
+        # private (the runtime config carries node credentials).
+        os.chmod(path, 0o700)
+    except OSError as e:
+        logger.warning(f'无法创建运行状态目录 {path}: {e}')
+    return path
+
+
 def sanitize_input(value: str, max_length: int = 256) -> str:
     """Sanitize user input string."""
     if not isinstance(value, str):

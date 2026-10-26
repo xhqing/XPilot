@@ -739,6 +739,22 @@ Configuration files live under `~/.config/xpilot/`:
 | `routing.json` | Routing rules (proxy / direct / block lists) |
 | `settings.json` | Global settings (ports, xray path, auto-switch, etc.) |
 
+### Runtime state files (`run/`)
+
+The PID file, the xray runtime config and the xray logs live under `<config dir>/run/` (default `~/.config/xpilot/run/`, mode `0700` — the runtime config carries node credentials) instead of `/tmp`:
+
+| File | Purpose |
+|------|---------|
+| `run/xpilot.pid` | xray main process PID |
+| `run/xray-config.json` | The xray config the running instance actually uses (so you can tell which config is live) |
+| `run/xray-stdout.log` / `run/xray-stderr.log` | xray stdout / stderr |
+| `run/auto-switch.pid` | Auto-switch monitor PID |
+| `run/xpilot-monitor.log` / `run/xpilot-monitor.err` | Monitor output when launched by launchd |
+
+Why they moved out of `/tmp`: the system purges temporary directories. Once the state files were gone while xray kept running and listening, `xpilot status` reported *stopped* for a proxy that was actually up — monitoring stayed hands-off and overseas traffic timed out silently for days (Issue #1). Status detection no longer trusts the PID file alone: when it is missing or stale, xpilot cross-checks listening ports against the xray process name, rewrites the PID file when it confirms the instance, and `xpilot status` says so ("state source: recovered from port listeners").
+
+xpilot's own log defaults to `<config dir>/logs/xpilot.log` (override with `log_file` in `settings.json`). When upgrading from 0.6.x, the old default `/tmp/xpilot.log` is migrated to the new default automatically; custom paths are left untouched.
+
 ### How configuration works
 
 - **Initialization**: running `xpilot init` generates the three default config files above under `~/.config/xpilot/`; add `-f` to force-overwrite existing config.
@@ -762,7 +778,7 @@ xpilot config show          # Show current configuration
   "socks_port": 1080,
   "http_port": 1087,
   "log_level": "warning",
-  "log_file": "/tmp/xpilot.log",
+  "log_file": "~/.config/xpilot/logs/xpilot.log",
   "auto_switch": {
     "enabled": true,
     "interval": 300,
@@ -823,15 +839,15 @@ xpilot persists its runtime logs to files so you can track down problems when th
 
 | Log file | Contents | Notes |
 |----------|----------|-------|
-| `/tmp/xpilot.log` | xpilot's own log | Records proxy start/stop, auto-switching, health checks, etc.; the background daemon's output is written here too. Path is controlled by the `log_file` field in `settings.json` |
-| `/tmp/xpilot-xray-stdout.log` | xray process stdout | Useful for xray startup and protocol handshake issues |
-| `/tmp/xpilot-xray-stderr.log` | xray process stderr | xray errors show up here first |
+| `<config dir>/logs/xpilot.log` | xpilot's own log | Records proxy start/stop, auto-switching, health checks, etc.; the background daemon's output is written here too. Path is controlled by the `log_file` field in `settings.json` (default `~/.config/xpilot/logs/xpilot.log`) |
+| `<config dir>/run/xray-stdout.log` | xray process stdout | Useful for xray startup and protocol handshake issues |
+| `<config dir>/run/xray-stderr.log` | xray process stderr | xray errors show up here first |
 
 Reading the logs:
 
 ```bash
-cat /tmp/xpilot.log                  # xpilot's own log
-tail -f /tmp/xpilot-xray-stderr.log  # Follow xray errors in real time
+cat ~/.config/xpilot/logs/xpilot.log                  # xpilot's own log
+tail -f ~/.config/xpilot/run/xray-stderr.log          # Follow xray errors in real time
 ```
 
 For more detail, raise the log level to `debug`:
@@ -846,8 +862,8 @@ xpilot config set log_level debug
 
 - Make sure xray is installed correctly: `which xray`
 - Check whether the port is already in use
-- Read the xray error log: `cat /tmp/xpilot-xray-stderr.log`
-- Read xpilot's own log: `cat /tmp/xpilot.log`
+- Read the xray error log: `cat ~/.config/xpilot/run/xray-stderr.log`
+- Read xpilot's own log: `cat ~/.config/xpilot/logs/xpilot.log`
 
 ### Q: The system proxy can't be set?
 

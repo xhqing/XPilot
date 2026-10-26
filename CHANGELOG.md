@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+### 修复（Issue #1：运行时状态文件迁出 /tmp + 状态交叉校验，修静默断网）
+
+- **为什么改**：2026-10-26 用户报「网络好像出问题了」，排查结论在 xpilot 自身——xray 的运行配置与 PID 文件硬编码在 `/tmp`，被 macOS 定期清理后，xray 进程仍在跑、1080/1087 仍在监听，但 `is_running()` 只凭 PID 文件判定 → `xpilot status` 显示 Stopped（与实际相反），监控与自动切换都认为无需干预；期间节点 IP 漂移让旧配置全部失效，境外访问静默 TCP 超时约 12 天。同期若再 `start` 还会拉起第二个实例（SO_REUSEPORT 下双绑成功）抢端口。Issue #1 列了 8 处硬编码与 4 条修复建议。
+- **改了什么**：① 新增 `utils.get_runtime_dir()`（优先级 `$PROXY_TOOLKIT_RUNTIME_DIR` → `$PROXY_TOOLKIT_CONFIG_DIR/run` → `<配置目录>/run`，目录 0700）——PID（`run/xpilot.pid`）、运行配置（`run/xray-config.json`）、xray 标准输出 / 错误（`run/xray-stdout.log` / `run/xray-stderr.log`）、自动切换 PID（`run/auto-switch.pid`）、launchd monitor 输出（`run/xpilot-monitor.log` / `.err`）、探活临时配置（`run/probe-*.json`）全部迁出 `/tmp`。② 新增 `ProxyManager.probe_runtime()`：PID 文件存在时校验「进程存活 + 进程名确为 xray（防 PID 复用）」；缺失 / 失效时用端口监听（lsof，Linux 退化 ss）+ 进程名交叉校验兜底，确认在跑则**自愈回写 PID 文件**；多实例写入 warnings；`is_running()` / `_get_pid()` / `get_status()` 均改由它支撑。③ `start()` 孤儿处置：已运行则幂等返回当前节点名、绝不重复拉起；多实例则拒绝启动并提示 `xpilot stop` 清理。④ 新增 `running_config_matches_current()`：比对运行实例配置里的代理出站与当前默认节点，`xpilot status` 在不一致时黄字提示 `xpilot restart` 生效；`xpilot subscription update` 成功后若代理在跑也提示 restart。⑤ 程序日志默认路径改为 `<配置目录>/logs/xpilot.log`，并对旧默认值 `/tmp/xpilot.log` 做一次窄迁移（自定义路径不动）。⑥ 双语 README 同步新的状态文件布局 / 日志位置 / 状态判定行为。
+- **回归防护**：新增 44 条测试（`tests/test_runtime_dir.py` / `test_runtime_state.py` / `test_runtime_cli.py` / `test_runtime_health_probe.py`，由 Hopper 先行出题、先红后绿），既有 116 条全绿；同时补上项目首套 CI（`.github/workflows/ci.yml`：全量 pytest + 静态检查）。
+
 ### 变更（负责 Agent 变更：`AGENTS.md` / `.pi` 两条身份软链接改指 FullStackEngineerAgent）
 
 - **为什么改**：用户 2026-10-26 做出团队结构调整，注销 NetOpsAgent（Hermes）这个 Agent，本仓移交 Atlas（FullStackEngineerAgent）负责；全局 `~/.pi/agent/docs/agents-registry.md` 的子项目映射已改完，本仓的身份软链接须跟随改指——不改的话，在本仓目录开会的会话仍会继承已注销 Agent 的身份 / 规则 / 技能。

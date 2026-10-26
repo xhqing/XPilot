@@ -12,7 +12,7 @@ import click
 from . import __version__
 from .config import Config, ConfigError
 from .updater import perform_update, perform_rollback, UpdateError
-from .utils import get_config_dir
+from .utils import get_config_dir, get_runtime_dir
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +21,8 @@ def setup_logging():
     """Configure logging to write to both the terminal and a log file.
 
     The log level and file path come from settings.json (``log_level`` and
-    ``log_file``), defaulting to WARNING and ``/tmp/xpilot.log``. The file
-    handler is essential for debugging: the auto-switch monitor runs as a
+    ``log_file``), defaulting to WARNING and ``<config dir>/logs/xpilot.log``.
+    The file handler is essential for debugging: the auto-switch monitor runs as a
     detached background daemon whose own stdout/stderr are discarded, so
     without a persistent log file its output would be lost for good.
     """
@@ -31,7 +31,8 @@ def setup_logging():
     except Exception:
         settings = {}
     log_level = settings.get('log_level', 'warning')
-    log_file = settings.get('log_file', '/tmp/xpilot.log')
+    log_file = settings.get('log_file') or os.path.join(
+        get_config_dir(), 'logs', 'xpilot.log')
     level = getattr(logging, log_level.upper(), logging.WARNING)
 
     root = logging.getLogger()
@@ -61,7 +62,7 @@ def setup_logging():
     root._xpilot_handlers_configured = True
 
 
-AUTO_SWITCH_PID_FILE = '/tmp/xpilot-auto-switch.pid'
+AUTO_SWITCH_PID_FILE = os.path.join(get_runtime_dir(), 'auto-switch.pid')
 LAUNCHD_LABEL = 'com.xpilot.monitor'
 LAUNCHD_PLIST_PATH = os.path.expanduser(
     f'~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist'
@@ -378,6 +379,22 @@ def status(verbose, no_speed):
             socks_port = info.get('socks_port', 1080)
             click.echo(f'  SOCKS port: {socks_port}')
             click.echo(f'  HTTP port: {info.get("http_port", "N/A")}')
+            # 状态来源可见：PID 文件丢了但端口上确为 xray 时，明说「已按端口恢复」，
+            # 避免用户把「自愈过的状态」当成正常历史。
+            if info.get('source') == 'port':
+                click.echo(click.style(
+                    '  状态来源: PID 文件缺失或失效，已按端口监听 + xray 进程名交叉校验恢复',
+                    fg='yellow'))
+            for warning in info.get('warnings') or []:
+                click.echo(click.style(f'  ⚠ {warning}', fg='yellow'))
+            # 运行实例仍用旧配置：订阅刷新 / 节点变更后不 restart 就等于没生效。
+            if info.get('config_stale') is False:
+                detail = info.get('config_stale_detail') or ''
+                click.echo(click.style(
+                    f'  ⚠ 配置已变更：{detail}（执行 xpilot restart 生效）', fg='yellow'))
+            elif info.get('config_stale') is None and info.get('config_stale_detail'):
+                click.echo(click.style(
+                    f'  ⚠ {info["config_stale_detail"]}', fg='yellow'))
             # 连通性：走当前代理访问 generate_204，只报通/不通，不展示延迟。
             try:
                 ok, _code, _lat = health_checker._curl_through_socks(socks_port, timeout=8)
@@ -922,7 +939,7 @@ def subscription_add(url, name):
 @click.argument('name', required=False)
 def subscription_update(name):
     """Update subscription(s)."""
-    config, node_manager, _, _, _, _ = get_managers()
+    config, node_manager, _, proxy_manager, _, _ = get_managers()
     try:
         settings = config.load_config('settings.json')
         subs = settings.get('subscriptions', {})
@@ -945,6 +962,13 @@ def subscription_update(name):
                 click.echo(f'  Refreshed {count} nodes from {sub_name}')
             except Exception as e:
                 click.echo(f'  Failed: {e}', err=True)
+
+        # 订阅刷新只改了 nodes.json；已在跑的 xray 仍用内存里的旧配置（IP 漂移后
+        # 旧地址失效就是这么发生的），必须显式提示 restart 才生效。
+        if proxy_manager.is_running():
+            click.echo(click.style(
+                '  代理正在运行：运行实例仍使用刷新前的配置，执行 xpilot restart 生效',
+                fg='yellow'))
     except Exception as e:
         click.echo(f'Error: {e}', err=True)
         sys.exit(1)
@@ -993,8 +1017,9 @@ def _build_launchd_plist() -> str:
     python_bin = sys.executable
     # Use the project root so the package is importable.
     workdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    stdout_log = '/tmp/xpilot-monitor.log'
-    stderr_log = '/tmp/xpilot-monitor.err'
+    runtime_dir = get_runtime_dir()
+    stdout_log = os.path.join(runtime_dir, 'xpilot-monitor.log')
+    stderr_log = os.path.join(runtime_dir, 'xpilot-monitor.err')
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1062,7 +1087,7 @@ def install_launchd():
         click.echo(click.style('launchd service installed and started', fg='green'))
         click.echo(f'  Label: {LAUNCHD_LABEL}')
         click.echo(f'  Plist: {LAUNCHD_PLIST_PATH}')
-        click.echo(f'  Logs:  /tmp/xpilot-monitor.log')
+        click.echo(f'  Logs:  {os.path.join(get_runtime_dir(), "xpilot-monitor.log")}')
         click.echo('  The monitor will auto-start on login and restart if killed.')
     except PermissionError as e:
         click.echo(f'Permission denied: {e}', err=True)
