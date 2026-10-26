@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install package and test tools
+        run: pip install -e . pytest ruff
+
+      - name: Full test suite
+        # 全量测试（含回归用例）。平台相关的系统调用（networksetup / launchctl /
+        # lsof / xray 进程）在测试里全部注入假实现，Linux runner 可完整跑通。
+        run: python -m pytest -q
+
+      - name: Static check (critical errors only)
+        # 只卡语法错误、未定义名、重复定义这类真错误；行宽等风格项不进 CI
+        # （存量基线仍有风格告警，不应阻塞合并）。
+        run: ruff check xpilot tests --select E9,F63,F7,F82
