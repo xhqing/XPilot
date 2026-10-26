@@ -21,11 +21,45 @@ class ValidationError(ConfigError):
 class Config:
     """Configuration manager for xpilot."""
 
+    # 旧版本把程序日志固定写在临时目录里，文件名固定，便于窄迁移识别。
+    LEGACY_LOG_FILE = '/tmp/xpilot.log'
+
     def __init__(self, config_dir: str = None):
         from .utils import get_config_dir
         self.config_dir = config_dir or os.environ.get('PROXY_TOOLKIT_CONFIG_DIR') or get_config_dir()
         self._settings_file = os.environ.get('PROXY_TOOLKIT_SETTINGS_FILE', 'settings.json')
         os.makedirs(self.config_dir, exist_ok=True)
+        self._migrate_legacy_log_file()
+
+    def get_default_log_file(self) -> str:
+        """程序日志的默认路径（跟着配置目录走，不再落临时目录）。"""
+        return os.path.join(self.config_dir, 'logs', 'xpilot.log')
+
+    def _migrate_legacy_log_file(self) -> None:
+        """把旧默认日志路径改成新默认值（只动恰好等于旧默认值的配置）。
+
+        为什么：0.6.x 生成的 settings.json 把 ``log_file`` 写成
+        ``/tmp/xpilot.log``，读时不会自动跟随新的默认值——不迁移的话，
+        老用户升级后日志仍然随时随手清空的 /tmp 消失，排障时无据可查。兼容口径：
+        只识别旧默认值本身，自定义路径（如 ``/var/log/xpilot.log``）一律
+        不动；settings.json 不存在时不凭空创建。
+        """
+        path = self._get_file_path('settings.json')
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, 'r') as f:
+                settings = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(settings, dict) or settings.get('log_file') != self.LEGACY_LOG_FILE:
+            return
+        settings['log_file'] = self.get_default_log_file()
+        try:
+            self.save_config('settings.json', settings)
+            logger.info(f'已将 log_file 从 {self.LEGACY_LOG_FILE} 迁移到 {settings["log_file"]}')
+        except (OSError, ConfigError) as e:
+            logger.warning(f'log_file 迁移失败（保持原值）: {e}')
 
     def load_config(self, file_name: str) -> dict:
         """Load a configuration file."""
@@ -115,7 +149,7 @@ class Config:
             'socks_port': 1080,
             'http_port': 1087,
             'log_level': 'warning',
-            'log_file': '/tmp/xpilot.log',
+            'log_file': self.get_default_log_file(),
             'auto_switch': {
                 'enabled': True,
                 'interval': 300,

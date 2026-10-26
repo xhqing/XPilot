@@ -227,7 +227,12 @@ class HealthChecker:
             'outbounds': [outbound,
                           {'tag': 'direct', 'protocol': 'freedom', 'settings': {}}],
         }
-        cfg_path = f'/tmp/xpilot-probe-{os.getpid()}-{port}.json'
+        # 探活临时配置也落 runtime 目录（与主实例的状态文件同位）：/tmp 被系统
+        # 清理时不会影响正在跑的探活实例，也不会留下无主的半个配置。
+        from .utils import get_runtime_dir
+        config_dir = getattr(getattr(self.proxy_manager, 'config', None), 'config_dir', None)
+        cfg_path = os.path.join(
+            get_runtime_dir(config_dir), f'probe-{os.getpid()}-{port}.json')
         proc = None
         try:
             with open(cfg_path, 'w') as f:
