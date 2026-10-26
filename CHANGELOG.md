@@ -4,6 +4,13 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 变更（负责 Agent 变更：`AGENTS.md` / `.pi` 两条身份软链接改指 FullStackEngineerAgent）
+
+- **为什么改**：用户 2026-10-26 做出团队结构调整，注销 NetOpsAgent（Hermes）这个 Agent，本仓移交 Atlas（FullStackEngineerAgent）负责；全局 `~/.pi/agent/docs/agents-registry.md` 的子项目映射已改完，本仓的身份软链接须跟随改指——不改的话，在本仓目录开会的会话仍会继承已注销 Agent 的身份 / 规则 / 技能。
+- **改了什么**：根目录两条相对路径软链接的指向由 `../NetOpsAgent/` 改为 `../FullStackEngineerAgent/` —— `AGENTS.md → ../FullStackEngineerAgent/AGENTS.md`、`.pi → ../FullStackEngineerAgent/.pi`。无内容改动、无新增文件。
+
 ## [0.6.3] - 2026-10-17
 
 ### 变更（Agent 进驻子项目：根目录新增 `AGENTS.md` 与 `.pi` 两条指向 NetOpsAgent 的软链接）

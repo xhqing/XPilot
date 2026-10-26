@@ -1,1 +1,1 @@
-../NetOpsAgent/AGENTS.md
+../FullStackEngineerAgent/AGENTS.md
