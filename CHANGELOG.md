@@ -4,7 +4,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [0.6.4] - 2026-10-26
 
 ### 修复（Issue #1：运行时状态文件迁出 /tmp + 状态交叉校验，修静默断网）
 
