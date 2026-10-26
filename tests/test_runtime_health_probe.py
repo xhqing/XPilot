@@ -66,7 +66,8 @@ def test_probe_config_lives_in_runtime_dir(tmp_path, monkeypatch):
     cfg_path = info['cfg_path']
     assert cfg_path is not None
     assert cfg_path.startswith(runtime_dir + os.sep)
-    assert not cfg_path.startswith('/tmp/')
+    assert os.path.dirname(cfg_path) == runtime_dir
+    assert cfg_path != f'/tmp/xpilot-probe-{os.getpid()}-18080.json'
     assert os.path.exists(cfg_path)
 
     argv = captured['argv']
@@ -93,5 +94,5 @@ def test_probe_config_name_is_not_legacy_tmp_pattern(tmp_path, monkeypatch):
     info = checker._start_probe(NODE)
 
     assert os.path.dirname(info['cfg_path']) == runtime_dir
-    assert '/tmp/' not in info['cfg_path']
+    assert info['cfg_path'] != f'/tmp/xpilot-probe-{os.getpid()}-18081.json'
     assert captured['argv'].count('-config') == 1

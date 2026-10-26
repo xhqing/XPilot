@@ -90,25 +90,33 @@ class TestGetRuntimeDir:
 
 
 class TestProxyManagerRuntimePaths:
-    """契约 2：四个状态文件全部落在 runtime 目录，不再以 /tmp 开头。"""
+    """契约 2：四个状态文件全部落在 runtime 目录，且不再是字面量的旧 /tmp 路径。
+
+    注意：CI 的 pytest tmp_path 本身可能就在 /tmp 下（linux runner），所以「有没有
+    迁出临时目录」只能比对字面量旧路径，不能拿宿主机临时目录前缀当判据。
+    """
 
     def test_runtime_dir_matches_helper(self, proxy_manager, ready_config):
         assert proxy_manager.runtime_dir == utils.get_runtime_dir(ready_config.config_dir)
 
     def test_all_state_files_live_under_runtime_dir(self, proxy_manager, ready_config):
         runtime = os.path.join(ready_config.config_dir, 'run')
+        # (runtime 目录下的期望路径, 迁移前的字面量旧路径)
         expected = {
-            'pid_file': os.path.join(runtime, 'xpilot.pid'),
-            'runtime_config_path': os.path.join(runtime, 'xray-config.json'),
-            'stdout_log_path': os.path.join(runtime, 'xray-stdout.log'),
-            'stderr_log_path': os.path.join(runtime, 'xray-stderr.log'),
+            'pid_file': (os.path.join(runtime, 'xpilot.pid'), '/tmp/xpilot.pid'),
+            'runtime_config_path': (
+                os.path.join(runtime, 'xray-config.json'), '/tmp/xpilot-xray.json'),
+            'stdout_log_path': (
+                os.path.join(runtime, 'xray-stdout.log'), '/tmp/xpilot-xray-stdout.log'),
+            'stderr_log_path': (
+                os.path.join(runtime, 'xray-stderr.log'), '/tmp/xpilot-xray-stderr.log'),
         }
 
-        for attr, path in expected.items():
+        for attr, (path, legacy) in expected.items():
             actual = getattr(proxy_manager, attr)
             assert actual == path, f'{attr} 应指向 runtime 目录下的 {os.path.basename(path)}'
             assert actual.startswith(runtime + os.sep), f'{attr} 不在 runtime 目录内: {actual}'
-            assert not actual.startswith('/tmp/'), f'{attr} 仍落在 /tmp: {actual}'
+            assert actual != legacy, f'{attr} 仍是旧的 /tmp 路径: {actual}'
 
     def test_no_tmp_pid_constant_left(self):
         """类级 PID_FILE 常量不得再指向 /tmp（已删除或改指 runtime 目录都算通过）。"""
@@ -125,7 +133,7 @@ class TestDefaultLogFile:
         log_file = config.get_default_settings_config()['log_file']
 
         assert log_file == os.path.join(str(config_dir), 'logs', 'xpilot.log')
-        assert not log_file.startswith('/tmp')
+        assert log_file != '/tmp/xpilot.log'
 
     def test_migrates_legacy_default_log_file(self, config_dir):
         """旧默认值 /tmp/xpilot.log 在 Config 初始化时改写成新默认路径。"""
