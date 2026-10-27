@@ -4,7 +4,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [0.7.0] - 2026-10-27
 
 ### 修复（Issue #5：陈旧运行实例自动恢复 + 清理旧版遗留 /tmp 状态文件）
 
