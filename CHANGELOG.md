@@ -4,6 +4,36 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复（Issue #5：陈旧运行实例自动恢复 + 清理旧版遗留 /tmp 状态文件）
+
+- **为什么改**：0.6.4（PR #3）把「静默断网」修到「能报告」：状态文件迁出 `/tmp`、`status` 三路交叉校验、配置陈旧时黄字提示 `xpilot restart`。但报告之后没人动手——2026-10 事故的真实链条是「节点 IP 漂移 → 跑着的 xray 仍用内存里的旧地址 → 代理显示在线、境外连接全部超时」，靠人看提示再手敲 restart 不是自愈。另外 0.6.3 及更早版本在 `/tmp` 留下的 PID / 运行配置 / 日志新代码不读也不删，惰性无害但事故排查时极具误导性（看着像旧实例还在跑）。
+- **改了什么**：
+  - 新增模块 `xpilot/legacy_cleanup.py`：按白名单（`xpilot.pid` / `xpilot-auto-switch.pid` / `xpilot-xray.json` / `xpilot.log` / `xpilot-xray-*.log`）找出旧版遗留文件，`PID 文件先确认进程已死才删`（删活进程的 PID 文件会重新制造「工具不知道它在跑」的状态错位）；单个文件删除失败只记 warning、不中断其余；全程 `tmp_dir` / `pid_alive` / `log` 可注入，返回值是实际删除的路径列表。
+  - `ProxyManager` 新增 `cleanup_legacy_state()`，挂在 `start()`（探测运行状态之前）与 `stop()`（返回之前）上——`restart()` 复用两者，自然覆盖。
+  - `AutoSwitch` 新增 `auto_recover` 子系统（默认开启）：`_check_stale_runtime()` 每 tick 比对运行实例配置与当前默认节点，**只在 `running_config_matches_current()` 明确返回 `False` 时**动手（`None` = 无法判定，不动）；`_track_dead_nodes()` 累计「全部节点真实流量不通」的连续轮次，达 `dead_restart_ticks`（默认 2）触发。两条路径统一走 `_recover_restart()`：`restart_window` 窗口内最多 `max_restarts` 次、两次之间至少 `min_interval` 秒，**到量后退回只告警**；重启抛异常同样计入配额（上限按尝试次数算，比按成功次数更能防死循环）；代理没在跑时不动手（拉起进程归 watchdog）。
+  - `_monitor_loop()`：每个 tick 检查陈旧配置（不受其它子系统间隔约束）、订阅同步由自身间隔判定；`_tick_interval` 封顶 30 秒；四个子系统全禁用时才不启动 monitor。
+  - `config.py` 新增 `auto_recover` 默认配置块。
+- **回归防护**：新增 87 条测试（`tests/test_legacy_cleanup.py` 19 / `tests/test_auto_recover.py` 30 / `tests/test_subscription_sync.py` 25 / `tests/test_config.py` 13，由 Hopper 先行出题、先红后绿），既有 160 条全绿。重点钉死的行为：`None`（无法判定）不得当作陈旧、失败重启不消耗配额会撞上限、禁用阈值不自增计数、刷新失败仍推进时间戳（不收紧重试节奏）、旧配置升级只发生一次（用户手动关闭不会被再迁回）。
+
+### 修复（Issue #6：`subscription.auto_update` / `update_interval` 死配置改为真正生效）
+
+- **为什么改**：这两个键从 0.6.x 起就写在 `config.py` 默认值里、README 配置示例里也列着，但**全仓库没有任何代码读取它们**——把 `auto_update` 改成 `true` 什么都不发生。后果是用户合理认为「有后台同步开关」，实际本地节点列表从不自动跟上服务端轮换，出事只能靠 `auto_switch.auto_update_subscription`（语义是全节点挂掉时的应急刷新，带 3600s cooldown）兜底。
+- **改了什么**：
+  - `AutoSwitch` 新增 `_subscription_sync_tick()`：按 `subscription.auto_update` + `subscription.update_interval`（默认 `true` / 3600 秒）定时拉订阅按名字刷新节点。时间戳**先推进再拉**——订阅端故障时不该把重试节奏收紧成每个 tick 一次。
+  - 抽出 `_refresh_all_subscriptions()` 供「定时同步」与「全挂应急刷新」共用：单个源失败只记 error、继续下一个。两条路径并存互补，各自独立开关与退避参数。
+  - `settings.json` 的 `subscription.auto_update` 默认值由 `false` 改为 `true`；`update_interval` 非法值（≤0 / 非数字）回退 3600。
+  - 新增 `Config._migrate_dead_subscription_flag()`：旧版 `settings.json` 升级时补上 `auto_recover` 默认块，并顺手把 `subscription.auto_update` 那个 `false` 改成 `true`。为什么必须迁：那个 `false` 是**从未被读取过的无效默认值残留**、不表达用户意图，不迁的话所有存量安装升级后定时同步依旧是关的，Issue #6 等于白修。
+  - 迁移判据用「文件里有没有 `auto_recover` 块」区分新旧（旧文件必然缺、新装或已迁移过必有），**不是**只看 `subscription` 块的内容：新默认的 `update_interval` 也是 3600，而用户关闭定时同步的自然写法恰恰是「`auto_update: false` + 间隔保持 3600」，与旧默认值逐字相同——只看块内容的话用户每次启动都会被迁回 `true`，等于关不掉。按新判据，迁移只发生一次，之后用户改成 `false` 就是真的关掉了。块内比较另做严格类型校验（`is False` / 排除 bool 的 `int`），避免 Python 里 `0 == False`、`3600.0 == 3600` 把手写异常值误判成旧默认值。
+  - CLI 提示随自动恢复状态改写：`subscription update` 后与 `status` 检测到配置陈旧时，自动恢复开启就说「监控进程将在下个周期内自动重启生效」，关闭才提示手动 `xpilot restart`。
+- **回归防护**：含在上条 87 条测试内（`tests/test_subscription_sync.py` 覆盖间隔生效、非法值回退、失败也推进时间戳、逐源隔离；`tests/test_config.py` 覆盖旧配置升级、只迁一次、用户配置过就不动、以及 `0` / `3600.0` 这类宽松相等陷阱的严格类型判据）。
+
+### 变更（双语 README 同步）
+
+- **为什么改**：新增 `auto_recover` 配置块与「定时订阅同步」真正生效，文档必须跟上，否则用户无从得知这两个开关存在、语义是什么。
+- **改了什么**：`README.md` / `README_cn.md` 同步更新——特性列表各加两条（陈旧实例自愈、订阅定时同步）；`subscription update` 章节补「刷新后运行实例如何生效」与定时同步说明；配置示例加 `auto_recover` 整块、`subscription.auto_update` 改 `true`；「watchdog 与 auto_switch 的区别」扩写为三者的分工与 `auto_recover` 的防死循环口径、两条订阅自动路径的区别；运行状态文件章节补旧版 `/tmp` 遗留文件的清理行为。两版语义严格对齐。
+
 ## [0.6.4] - 2026-10-26
 
 ### 修复（Issue #1：运行时状态文件迁出 /tmp + 状态交叉校验，修静默断网）

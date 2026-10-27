@@ -7,6 +7,23 @@ import threading
 logger = logging.getLogger(__name__)
 
 
+def _coerce_positive_int(value, default: int) -> int:
+    """把配置值转成正整数；非法（≤0 / 非数字 / None）时回退默认值。"""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
+def _coerce_int(value, default: int) -> int:
+    """把配置值转成整数；非法时回退默认值（允许 0 与负数，用于「禁用」语义）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class AutoSwitch:
     """Automatically switch to better nodes based on health checks, with an
     independent watchdog that keeps the proxy process alive.
@@ -51,6 +68,21 @@ class AutoSwitch:
         # 带宽缓存：node_id -> {speed_mbps, ts}；全组到 ttl 后整组重测。
         self._speed_cache = {}
         self._last_speed_test = 0.0
+        # 定时订阅同步（Issue #6）：subscription.auto_update / update_interval。
+        # 与 auto_switch.auto_update_subscription（全挂应急刷新，带 cooldown）
+        # 是两条互补的路径：这条管「例行同步」，那条管「出事补救」。
+        self._subscription_sync_enabled = False
+        self._subscription_sync_interval = 3600
+        self._last_sub_sync = 0.0
+        # 陈旧实例自动恢复（Issue #5）：运行配置与默认节点不一致、或连续多轮
+        # 全部节点流量不通时，自动重启一次（带窗口限次与最小间隔，防重启死循环）。
+        self._auto_recover_enabled = False
+        self._recover_max_restarts = 3
+        self._recover_window = 1800
+        self._recover_min_interval = 60
+        self._dead_restart_ticks = 2
+        self._recover_times = []
+        self._dead_ticks = 0
 
     def start(self) -> None:
         """Start monitoring (watchdog and/or auto-switch).
@@ -64,15 +96,31 @@ class AutoSwitch:
             return
 
         settings = self.config.load_config('settings.json')
-        auto_switch_cfg = settings.get('auto_switch', {})
-        watchdog_cfg = settings.get('watchdog', {})
+        auto_switch_cfg = settings.get('auto_switch', {}) or {}
+        watchdog_cfg = settings.get('watchdog', {}) or {}
+        subscription_cfg = settings.get('subscription', {}) or {}
+        recover_cfg = settings.get('auto_recover', {}) or {}
 
         self._auto_switch_enabled = auto_switch_cfg.get('enabled', False)
         # Watchdog defaults to enabled for safety
         self._watchdog_enabled = watchdog_cfg.get('enabled', True)
+        # 定时订阅同步（Issue #6）：曾经是死配置（生成了默认值却没人读），
+        # 现在真正生效——服务端轮换密钥 / IP 后，节点列表在下一个周期内跟上。
+        self._subscription_sync_enabled = bool(subscription_cfg.get('auto_update', True))
+        self._subscription_sync_interval = _coerce_positive_int(
+            subscription_cfg.get('update_interval'), 3600)
+        # 陈旧实例自动恢复（Issue #5）。旧 settings.json 没有这个块，缺块按默认开。
+        self._auto_recover_enabled = bool(recover_cfg.get('enabled', True))
+        self._recover_max_restarts = _coerce_positive_int(recover_cfg.get('max_restarts'), 3)
+        self._recover_window = _coerce_positive_int(recover_cfg.get('restart_window'), 1800)
+        self._recover_min_interval = _coerce_int(recover_cfg.get('min_interval'), 60)
+        # <=0 表示禁用「全挂重启」这条触发路径（配置陈旧仍可触发）。
+        self._dead_restart_ticks = _coerce_int(recover_cfg.get('dead_restart_ticks'), 2)
 
-        if not self._auto_switch_enabled and not self._watchdog_enabled:
-            logger.info('Both auto-switch and watchdog are disabled, skipping monitor')
+        if (not self._auto_switch_enabled and not self._watchdog_enabled
+                and not self._subscription_sync_enabled
+                and not self._auto_recover_enabled):
+            logger.info('All subsystems are disabled, skipping monitor')
             return
 
         self._auto_switch_interval = auto_switch_cfg.get('interval', 300)
@@ -88,13 +136,23 @@ class AutoSwitch:
         self._speed_test_size = auto_switch_cfg.get('speed_test_size', 2000000)
 
         # The loop tick is the shorter interval so each subsystem can still
-        # honour its own (longer) schedule.
+        # honour its own (longer) schedule. 自动恢复的检查锁在 30 秒粒度内
+        # （只读一次运行配置，开销很小），所以 tick 永不超过 30 秒。
         intervals = []
         if self._watchdog_enabled:
             intervals.append(self._watchdog_interval)
         if self._auto_switch_enabled:
             intervals.append(self._auto_switch_interval)
-        self._tick_interval = min(intervals) if intervals else 30
+        if self._subscription_sync_enabled:
+            intervals.append(self._subscription_sync_interval)
+        if self._auto_recover_enabled:
+            intervals.append(30)
+        self._tick_interval = min(min(intervals), 30) if intervals else 30
+
+        # 定时订阅同步的起点定在 start 时刻：首次拉取发生在一个 interval 之后，
+        # 不让 `xpilot start` 因为等订阅服务器而变慢（手动 `subscription update`
+        # 随时可用）。
+        self._last_sub_sync = time.time()
 
         self._running = True
         self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
@@ -142,10 +200,19 @@ class AutoSwitch:
                     self._watchdog_check()
                     self._last_watchdog = time.time()
 
+                # 陈旧实例自愈（Issue #5）：每个 tick 都查——运行配置与当前默认
+                # 节点不一致时，重启一次就能修好（正是 2026-10 静默断网那个场景）。
+                if self._auto_recover_enabled:
+                    self._check_stale_runtime()
+
                 # Auto-switch tick
                 if self._auto_switch_enabled and (now - self._last_auto_switch) >= self._auto_switch_interval:
                     self._check_and_switch()
                     self._last_auto_switch = time.time()
+
+                # 定时订阅同步（Issue #6）：间隔由方法内部判定，每个 tick 问一句。
+                if self._subscription_sync_enabled:
+                    self._subscription_sync_tick()
             except Exception as e:
                 logger.error(f'Monitor loop error: {e}')
             time.sleep(self._tick_interval)
@@ -215,7 +282,12 @@ class AutoSwitch:
                     usable = self._sort_usable([r for r in results if r.get('ok')])
             if not usable:
                 logger.error('刷新订阅后仍无可用节点')
+                # 连续多轮全挂才说明本地状态真的坏了（单轮更可能是订阅端抖动）。
+                self._track_dead_nodes(0)
                 return
+
+        # 有可用节点即视为正常：把「连续全挂」计数归零。
+        self._track_dead_nodes(len(usable))
 
         best = self._pick_best(usable)
         current_node = self.node_manager.get_default_node()
@@ -368,15 +440,134 @@ class AutoSwitch:
             return False
 
         self._last_sub_refresh = now
-        refreshed_total = 0
+        return self._refresh_all_subscriptions() > 0
+
+    def _refresh_all_subscriptions(self) -> int:
+        """拉取全部订阅源并按名字刷新已有节点，返回处理节点总数。
+
+        定时同步与「全挂应急刷新」共用这一段：单个源失败只记 error、继续下
+        一个——一个机场挂了不该拖累其它订阅。无订阅源或全部失败时返回 0。
+        """
+        subs = self.config.load_config('settings.json').get('subscriptions', {}) or {}
+        total = 0
         for name, url in subs.items():
             try:
-                count = self.node_manager.import_from_subscription(url, update_existing=True, source=name)
-                logger.info(f'自动刷新订阅 {name}：处理 {count} 个节点（按名字刷新连接字段）')
-                refreshed_total += count
+                count = self.node_manager.import_from_subscription(
+                    url, update_existing=True, source=name)
+                logger.info(f'刷新订阅 {name}：处理 {count} 个节点（按名字刷新连接字段）')
+                total += count
             except Exception as e:
-                logger.error(f'自动刷新订阅 {name} 失败: {e}')
-        return refreshed_total > 0
+                logger.error(f'刷新订阅 {name} 失败: {e}')
+        return total
+
+    def _subscription_sync_tick(self) -> bool:
+        """按 ``subscription.update_interval`` 定时刷新订阅（Issue #6）。
+
+        与 :meth:`_try_refresh_subscription` 的区别：那条是「所有节点都不通」
+        时的应急补救（带独立 cooldown），这条是例行同步——服务端轮换密钥 / IP
+        后，本地节点列表在一个周期内自动跟上，不用等出事。
+
+        返回本轮是否真的拉到了节点。时间戳**先推进再拉**：订阅端故障时不该把
+        重试节奏收紧成每个 tick 一次。
+        """
+        if not self._subscription_sync_enabled:
+            return False
+
+        now = time.time()
+        if now - self._last_sub_sync < self._subscription_sync_interval:
+            return False
+
+        self._last_sub_sync = now
+        count = self._refresh_all_subscriptions()
+        if count > 0:
+            logger.info(f'定时同步订阅完成：本轮处理 {count} 个节点')
+            return True
+        return False
+
+    def _recover_restart(self, reason: str) -> bool:
+        """执行一次受限的自动重启（Issue #5），返回是否真的重启成功。
+
+        三道闸门保证不会重启死循环：
+
+        * 窗口内次数上限（``max_restarts`` / ``restart_window``）：连续重启仍
+          修不好时（例如根本没有可达节点），到量后**退回只告警**；
+        * 两次重启最小间隔（``min_interval``）：防抖，不因相邻 tick 反复启停；
+        * 代理没在跑时不动手——拉起进程是 watchdog 的职责，不归这里。
+
+        重启失败同样计入配额：修不好的状态不该每轮都重新启停一次。
+        """
+        if not self._auto_recover_enabled:
+            return False
+        if not self.proxy_manager.is_running():
+            return False
+
+        now = time.time()
+        self._recover_times = [t for t in self._recover_times
+                               if now - t < self._recover_window]
+
+        if len(self._recover_times) >= self._recover_max_restarts:
+            logger.warning(
+                f'自动恢复已达上限（{self._recover_max_restarts} 次 / '
+                f'{self._recover_window}s），仅告警不再重启：{reason}')
+            return False
+
+        if (self._recover_times
+                and now - self._recover_times[-1] < self._recover_min_interval):
+            logger.debug(
+                f'距上次自动重启不足 {self._recover_min_interval}s，跳过：{reason}')
+            return False
+
+        ok = True
+        try:
+            self.proxy_manager.restart()
+        except Exception as e:
+            ok = False
+            logger.error(f'自动恢复重启失败：{reason}；{e}')
+        self._recover_times.append(now)
+
+        if ok:
+            logger.info(
+                f'自动恢复：{reason} → 已重启代理'
+                f'（本窗口第 {len(self._recover_times)}/{self._recover_max_restarts} 次）')
+        return ok
+
+    def _check_stale_runtime(self) -> bool:
+        """运行实例的配置与当前默认节点不一致时自动重启（Issue #5 第 1 条）。
+
+        只处理 ``running_config_matches_current()`` **明确返回 False** 的情况：
+        ``True`` 是一致、``None`` 是无法判定（运行配置缺失 / 无默认节点），
+        后者重启也解决不了问题，只会白抖一次。
+        """
+        if not self.proxy_manager.is_running():
+            return False
+
+        matched, detail = self.proxy_manager.running_config_matches_current()
+        if matched is not False:
+            return False
+
+        return self._recover_restart(f'运行实例配置陈旧（{detail}）')
+
+    def _track_dead_nodes(self, usable_count: int) -> bool:
+        """记录「全部节点真实流量不通」的连续轮次，达阈值触发恢复重启。
+
+        单轮全挂很可能是订阅端抖动；连续多轮才说明本地状态真的坏了（2026-10
+        事故：节点 IP 漂移，跑着的 xray 还咬内存里的旧地址）。恢复即归零。
+        ``dead_restart_ticks <= 0`` 时禁用这条路径（不累加计数）。
+        """
+        if usable_count > 0:
+            self._dead_ticks = 0
+            return False
+
+        if self._dead_restart_ticks <= 0:
+            return False
+
+        self._dead_ticks += 1
+        if self._dead_ticks < self._dead_restart_ticks:
+            return False
+
+        rounds = self._dead_ticks
+        self._dead_ticks = 0
+        return self._recover_restart(f'连续 {rounds} 轮全部节点真实流量不通')
 
     def manual_switch(self, node_id: str) -> bool:
         """Manually trigger a switch to a specific node."""

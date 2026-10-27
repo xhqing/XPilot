@@ -154,6 +154,11 @@ def get_managers():
     return config, node_manager, routing_manager, proxy_manager, health_checker, auto_switch
 
 
+def _auto_recover_enabled(settings: dict) -> bool:
+    """settings 里的自动恢复是否开启（缺块按默认开，与 config.py 默认一致）。"""
+    return bool((settings.get('auto_recover') or {}).get('enabled', True))
+
+
 @click.group(invoke_without_command=True)
 @click.option('--update', is_flag=True,
               help='Update xpilot to the latest GitHub release, then exit.')
@@ -390,8 +395,18 @@ def status(verbose, no_speed):
             # 运行实例仍用旧配置：订阅刷新 / 节点变更后不 restart 就等于没生效。
             if info.get('config_stale') is False:
                 detail = info.get('config_stale_detail') or ''
-                click.echo(click.style(
-                    f'  ⚠ 配置已变更：{detail}（执行 xpilot restart 生效）', fg='yellow'))
+                try:
+                    auto_recover = _auto_recover_enabled(
+                        config.load_config('settings.json'))
+                except Exception:
+                    auto_recover = True
+                if auto_recover:
+                    click.echo(click.style(
+                        f'  ⚠ 配置已变更：{detail}（监控进程将在下个周期自动重启生效，'
+                        f'也可执行 xpilot restart）', fg='yellow'))
+                else:
+                    click.echo(click.style(
+                        f'  ⚠ 配置已变更：{detail}（执行 xpilot restart 生效）', fg='yellow'))
             elif info.get('config_stale') is None and info.get('config_stale_detail'):
                 click.echo(click.style(
                     f'  ⚠ {info["config_stale_detail"]}', fg='yellow'))
@@ -964,11 +979,18 @@ def subscription_update(name):
                 click.echo(f'  Failed: {e}', err=True)
 
         # 订阅刷新只改了 nodes.json；已在跑的 xray 仍用内存里的旧配置（IP 漂移后
-        # 旧地址失效就是这么发生的），必须显式提示 restart 才生效。
+        # 旧地址失效就是这么发生的）。自动恢复开启时会自己重启（Issue #5），
+        # 关着就只能提醒手动执行。
         if proxy_manager.is_running():
-            click.echo(click.style(
-                '  代理正在运行：运行实例仍使用刷新前的配置，执行 xpilot restart 生效',
-                fg='yellow'))
+            if _auto_recover_enabled(settings):
+                click.echo(click.style(
+                    '  代理正在运行：运行实例将在下个监控周期内自动重启生效'
+                    '（也可立即执行 xpilot restart）',
+                    fg='yellow'))
+            else:
+                click.echo(click.style(
+                    '  代理正在运行：运行实例仍使用刷新前的配置，执行 xpilot restart 生效',
+                    fg='yellow'))
     except Exception as e:
         click.echo(f'Error: {e}', err=True)
         sys.exit(1)

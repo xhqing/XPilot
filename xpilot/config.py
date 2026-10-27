@@ -24,12 +24,41 @@ class Config:
     # 旧版本把程序日志固定写在临时目录里，文件名固定，便于窄迁移识别。
     LEGACY_LOG_FILE = '/tmp/xpilot.log'
 
+    # 0.6.4 及更早的 settings.json 生成过这一组 ``subscription`` 默认值，但那时
+    # 没有任何代码读取它（Issue #6 的「dead config」）——所以这里的 ``false``
+    # 不是用户的选择，只是无效默认值的残留。
+    LEGACY_SUBSCRIPTION_DEFAULTS = {'auto_update': False, 'update_interval': 3600}
+
+    # 新版默认块（`get_default_settings_config` 与旧配置升级共用这一份定义）。
+    DEFAULT_SUBSCRIPTION = {
+        # 定时同步订阅（Issue #6）：曾经是死配置（生成了却没人读），现在由 monitor
+        # 按 update_interval 真正生效。关闭后仍可用手动 `xpilot subscription update`。
+        'auto_update': True,
+        'update_interval': 3600,
+    }
+
+    DEFAULT_AUTO_RECOVER = {
+        # 陈旧运行实例自动恢复（Issue #5）：运行配置与当前默认节点不一致、或连续
+        # dead_restart_ticks 轮全部节点真实流量不通时，自动重启一次（带窗口限次与
+        # 最小间隔，防重启死循环）。
+        'enabled': True,
+        # 一个 restart_window 秒窗口内最多自动重启几次；到量后退回只告警。
+        'max_restarts': 3,
+        'restart_window': 1800,
+        # 两次自动重启的最小间隔（秒），防抖。
+        'min_interval': 60,
+        # 连续多少轮「全部节点真实流量不通」才触发重启；<=0 禁用这条路径
+        # （配置陈旧仍可触发）。单轮全挂多是订阅端抖动，不该急着重启。
+        'dead_restart_ticks': 2,
+    }
+
     def __init__(self, config_dir: str = None):
         from .utils import get_config_dir
         self.config_dir = config_dir or os.environ.get('PROXY_TOOLKIT_CONFIG_DIR') or get_config_dir()
         self._settings_file = os.environ.get('PROXY_TOOLKIT_SETTINGS_FILE', 'settings.json')
         os.makedirs(self.config_dir, exist_ok=True)
         self._migrate_legacy_log_file()
+        self._migrate_dead_subscription_flag()
 
     def get_default_log_file(self) -> str:
         """程序日志的默认路径（跟着配置目录走，不再落临时目录）。"""
@@ -60,6 +89,70 @@ class Config:
             logger.info(f'已将 log_file 从 {self.LEGACY_LOG_FILE} 迁移到 {settings["log_file"]}')
         except (OSError, ConfigError) as e:
             logger.warning(f'log_file 迁移失败（保持原值）: {e}')
+
+    def _migrate_dead_subscription_flag(self) -> None:
+        """旧版 settings.json 升级：补 ``auto_recover`` 块 + 修正从未生效过的订阅开关。
+
+        两件事一起做，判据是「文件里有没有 ``auto_recover`` 块」：
+
+        * **旧文件**（0.6.4 及更早生成）必然没有这个块——它是本次升级新增的。
+          此时补上默认块，并顺手把 ``subscription.auto_update`` 那个 ``false``
+          改成 ``true``：那个值写于这个键还没人读的年代，是无效默认值残留、
+          不表达用户意图（不迁的话所有存量安装升级后定时同步依旧是关的）。
+        * **新文件**（``xpilot init`` 生成、或已经迁移过）一定有这个块——此时
+          一个字节都不动。用户把 ``auto_update`` 改成 ``false`` 就是真的关掉了。
+
+        为什么不能只看 subscription 块的内容：新默认的 ``update_interval`` 也是
+        3600，而用户关闭定时同步的自然写法恰恰是「``auto_update: false`` + 间隔
+        保持 3600」——那与旧默认值逐字相同。只看块内容的话，用户每次启动都会被
+        迁回 ``true``，等于关不掉。
+        """
+        path = self._get_file_path('settings.json')
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, 'r') as f:
+                settings = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(settings, dict):
+            return
+        # 已有 auto_recover 块 = 新版配置（或已迁移过），不再碰用户的设置。
+        if 'auto_recover' in settings:
+            return
+
+        settings['auto_recover'] = dict(self.DEFAULT_AUTO_RECOVER)
+        upgraded_flag = self._is_legacy_subscription_block(settings.get('subscription'))
+        if upgraded_flag:
+            settings['subscription']['auto_update'] = True
+
+        try:
+            self.save_config('settings.json', settings)
+        except OSError as e:
+            logger.warning(f'旧配置升级失败: {e}')
+            return
+        logger.info(
+            'settings.json 已升级：补 auto_recover 默认块'
+            + ('，并将 subscription.auto_update 从旧版无效默认值 false 改为 true'
+               if upgraded_flag else ''))
+
+    @classmethod
+    def _is_legacy_subscription_block(cls, block) -> bool:
+        """``subscription`` 块是否逐字等于旧版本生成的无效默认值。
+
+        类型比较用 ``is False`` 与 ``isinstance(..., int)``（排除 bool）而不是
+        ``==``：Python 里 ``0 == False``、``3600.0 == 3600``，用 ``==`` 会把
+        明显不是旧默认值的写法（手写成 ``auto_update: 0`` 之类）也当成旧默认值。
+        """
+        if not isinstance(block, dict):
+            return False
+        if set(block) != set(cls.LEGACY_SUBSCRIPTION_DEFAULTS):
+            return False
+        if block['auto_update'] is not False:
+            return False
+        interval = block['update_interval']
+        return (isinstance(interval, int) and not isinstance(interval, bool)
+                and interval == 3600)
 
     def load_config(self, file_name: str) -> dict:
         """Load a configuration file."""
@@ -184,10 +277,9 @@ class Config:
                 'max_retries': 3,
                 'retry_delay': 5
             },
-            'subscription': {
-                'auto_update': False,
-                'update_interval': 3600
-            },
+            # 订阅与自动恢复两块共用类上的常量定义（迁移逻辑也用同一份，避免两处走离）。
+            'subscription': dict(self.DEFAULT_SUBSCRIPTION),
+            'auto_recover': dict(self.DEFAULT_AUTO_RECOVER),
             'system_proxy': {
                 'enabled': True,
                 'bypass_local': True
