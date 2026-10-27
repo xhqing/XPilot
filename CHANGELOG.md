@@ -4,6 +4,14 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复（Issue #9：`--version` 报陈旧版本号，`__version__` 硬编码在 `xpilot/__init__.py`）
+
+- **为什么改**：0.7.0 发布后用户实测报缺陷——`xpilot --update` 明确打印 `Successfully installed xpilot-0.7.0`、`pip show xpilot` 也报 `Version: 0.7.0`，但紧接着 `xpilot --version` 仍报 `0.6.4`。根因：`xpilot/__init__.py` 硬编码 `__version__ = '0.6.4'`，而 `cli.py` 的 `click.version_option` 与 `updater.py` 的「当前版本」都读它；那次 bump 改了 `VERSION` / `pyproject.toml` / `setup.py` / README 徽章 / CHANGELOG，**漏了这一处**，于是 wheel 元数据是 0.7.0、源码常量却是 0.6.4。连带影响比显示错误更重：`updater.py` 拿它做基准比最新 Release，于是**每次 `--update` 都认为 0.6.4 < 0.7.0，重复下载并重装同一个 wheel**，静默无提示。
+- **改了什么**：`xpilot/__init__.py` 不再硬编码版本号，新增 `_resolve_version(distribution_version=None, version_file=None)` 做三级解析——① 已安装 → `importlib.metadata.version('xpilot')`（与 `pip show` 同源，来自 `pyproject.toml` / `setup.py`）；② 源码直跑（`PackageNotFoundError`）→ 仓库根 `VERSION` 文件（唯一权威源）；③ 两条都不可用 → `'unknown'`（导入本包不因拿不到版本号而崩）。模块级 `__version__` 由该函数计算。两个参数是仅测试用的注入点。版本号载体从 4 处降到 3 处，剩下的全在发版清单内，这个漏点从此不可能再漏。
+- **回归防护**：新增 16 条测试（`tests/test_version.py`，由 Hopper 先行出题、先红后绿，采集阶段即 `ImportError` 验证断言有效），既有 247 条全绿、全量 263 passed。关键断言：读 `xpilot/__init__.py` 源码正则扫 `__version__\s*=\s*['\"]\d` 必须无命中（钉死「不许再硬编码」）；`xpilot --version` 与 `updater.get_current_version()` 都必须报真实版本（直接覆盖 Issue #9 的两个用户可见影响）。
+
 ## [0.7.0] - 2026-10-27
 
 ### 修复（Issue #5：陈旧运行实例自动恢复 + 清理旧版遗留 /tmp 状态文件）
