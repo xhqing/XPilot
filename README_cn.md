@@ -22,7 +22,8 @@
 - 支持 VMess、VLESS、Trojan、Shadowsocks 协议
 - 智能节点健康检测（延迟/连通性）
 - 自动切换到延迟最低的可用节点（基于真实流量）
-- 订阅自动导入（Base64/JSON/Clash 格式）
+- 陈旧实例自愈：运行配置与当前节点不一致、或连续多轮全部节点不通时自动重启（带限次与退避，不会重启死循环）
+- 订阅自动导入（Base64/JSON/Clash 格式）；支持定时同步，也可在全部节点失效时自动刷新
 - macOS 系统代理集成
 - 灵活的路由规则管理（代理/直连/拦截）
 - 常用命令（`start` / `restart` / `stop` / `status`）后台运行、立即返回，运行日志自动落盘，便于排查问题
@@ -631,6 +632,10 @@ xpilot subscription add "https://example.com/subscription" --name "My Subscripti
 
 从已保存的订阅源刷新节点：按节点名匹配已有节点，用订阅里的最新连接字段（地址、端口、UUID、密码、加密方式等）覆盖旧值，保留 id、分组与自定义名；同时导入新增节点。仅追加、不刷新已有节点请用 `node import`。
 
+刷新只改节点列表（`nodes.json`）。若代理正在运行，运行实例仍持有内存里的旧配置——默认情况下监控进程会在下个周期内自动重启让它生效（`auto_recover.enabled`，见下方配置说明）；把自动恢复关掉时会退回到提示你手动 `xpilot restart`。
+
+除了手动执行，也可以开启 `subscription.auto_update` 让 monitor 按 `subscription.update_interval` 定时同步，服务端轮换密钥 / IP 后本地节点列表会自动跟上。
+
 更新所有订阅源：
 
 ```bash
@@ -755,6 +760,8 @@ PID 文件、运行时 xray 配置与 xray 日志放在 `<配置目录>/run/` �
 
 程序自身日志默认写到 `<配置目录>/logs/xpilot.log`，可用 `settings.json` 的 `log_file` 改。从 0.6.x 升级时，旧默认值 `/tmp/xpilot.log` 会被自动迁移到新默认路径（自定义路径不受影响）。
 
+0.6.3 及更早版本遗留在 `/tmp` 的旧状态文件（`xpilot.pid`、`xpilot-auto-switch.pid`、`xpilot-xray.json`、`xpilot-xray-*.log`、`xpilot.log`）会在下次 `xpilot start` / `stop` 时自动清理，日志里会写明删了哪些。清理前先确认 PID 文件描述的进程确实不在了——活进程的 PID 文件不会被删（删了反而会重新制造「工具不知道它在跑」的状态错位）。
+
 ### 配置方法
 
 - **初始化**：运行 `xpilot init` 会在 `~/.config/xpilot/` 生成上述三个默认配置文件；加 `-f` 可强制覆盖已有配置。
@@ -792,8 +799,15 @@ xpilot config show          # 查看当前配置
     "retry_delay": 5
   },
   "subscription": {
-    "auto_update": false,
+    "auto_update": true,
     "update_interval": 3600
+  },
+  "auto_recover": {
+    "enabled": true,
+    "max_restarts": 3,
+    "restart_window": 1800,
+    "min_interval": 60,
+    "dead_restart_ticks": 2
   },
   "system_proxy": {
     "enabled": true,
@@ -802,7 +816,13 @@ xpilot config show          # 查看当前配置
 }
 ```
 
-> **watchdog 与 auto_switch 的区别**：`watchdog` 默认开启，负责在 xray 进程意外退出时自动重新拉起（保活），与是否启用 `auto_switch` 无关；`auto_switch` 默认开启，每 interval 秒在所有真实流量可用的节点中选**延迟最低**的，最优不是当前节点就切换（`hysteresis` 可防止两个节点延迟接近时来回抖动），全部节点不通时自动拉取订阅按名字刷新。两者相互独立，可单独开关。
+> **watchdog、auto_switch 与 auto_recover 的分工**：`watchdog` 默认开启，负责在 xray 进程意外退出时自动重新拉起（保活），与是否启用 `auto_switch` 无关；`auto_switch` 默认开启，每 interval 秒在所有真实流量可用的节点中选**延迟最低**的，最优不是当前节点就切换（`hysteresis` 可防止两个节点延迟接近时来回抖动），全部节点不通时自动拉取订阅按名字刷新；`auto_recover` 默认开启，负责在**进程活着但配置已经不对**时自动重启一次——两条触发路径：运行实例的配置与当前默认节点不一致（`subscription update` 刷新了节点、或默认节点被切换过），或连续 `dead_restart_ticks` 轮全部节点真实流量都不通（节点 IP 漂移、旧地址失效的典型场景）。三者相互独立，可单独开关。
+
+> **`auto_recover` 的防死循环**：一个 `restart_window` 秒窗口内最多自动重启 `max_restarts` 次，两次之间至少隔 `min_interval` 秒；重启修不好的情况（例如根本没有可达节点）到量后**退回只告警、不再重启**。把 `dead_restart_ticks` 设为 `<= 0` 可禁用「连续全挂」这条路径（配置陈旧仍会触发）。
+
+> **订阅的两条自动路径**：`subscription.auto_update`（默认开启，配 `subscription.update_interval`）是**例行同步**——服务端轮换密钥 / IP 后本地在一个周期内跟上；`auto_switch.auto_update_subscription`（默认开启，配 `subscription_refresh_cooldown`）是**应急补救**——只有当所有节点真实流量都不通时才拉一次订阅。两者互补，可分别关闭。
+
+> **从 0.6.4 及更早版本升级时 `settings.json` 会被自动升级一次**：补上 `auto_recover` 默认块，并把 `subscription.auto_update` 从旧版那个从未生效过的 `false` 改成 `true`。升级只发生一次——“配置里已经出现 `auto_recover` 块”就是“已升级”的标记。之后你把 `auto_update` 改成 `false` 就是真的关掉了，不会再被改回来。
 
 ### routing.json 字段说明
 

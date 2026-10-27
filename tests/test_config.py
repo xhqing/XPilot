@@ -132,3 +132,137 @@ class TestConfig:
             f.write('{invalid json}')
         with pytest.raises(ConfigError):
             config.load_config('bad.json')
+
+
+BASE_SETTINGS = {
+    'socks_port': 1080,
+    'auto_switch': {'enabled': False},
+    'subscription': {'auto_update': False, 'update_interval': 3600},
+}
+
+
+def _write_settings(tmp_dir, settings):
+    path = os.path.join(str(tmp_dir), 'settings.json')
+    with open(path, 'w') as f:
+        json.dump(settings, f, indent=2)
+    return path
+
+
+def _read_settings(tmp_dir):
+    with open(os.path.join(str(tmp_dir), 'settings.json')) as f:
+        return json.load(f)
+
+
+class TestSubscriptionFlagMigration:
+    """Issue #6 存量迁移：把旧版「从未生效过」的 subscription 默认值迁到新默认。
+
+    0.6.4 及更早生成的 settings.json 写着 ``auto_update: false``，但那时没人读
+    这个键，那个 false 不表达用户意图。不迁移的话，存量安装升级后定时同步全是
+    关的，Issue #6 等于白修。判据保守：只有整个块恰好等于旧默认值才动。
+    """
+
+    def test_legacy_constant_matches_old_defaults(self):
+        assert Config.LEGACY_SUBSCRIPTION_DEFAULTS == {
+            'auto_update': False, 'update_interval': 3600}
+
+    def test_legacy_default_block_is_migrated(self, tmp_path):
+        _write_settings(tmp_path, BASE_SETTINGS)
+
+        Config(str(tmp_path))
+
+        saved = _read_settings(tmp_path)
+        assert saved['subscription']['auto_update'] is True
+        assert saved['subscription']['update_interval'] == 3600
+        assert saved['socks_port'] == 1080, '迁移只动 subscription 块，其余配置保持不变'
+
+    @pytest.mark.parametrize('subscription', [
+        {'auto_update': False, 'update_interval': 900},
+        {'auto_update': True, 'update_interval': 3600},
+        {'auto_update': False, 'update_interval': 3600, 'x': 1},
+    ])
+    def test_customized_block_is_left_alone(self, tmp_path, subscription):
+        """不是「恰好等于旧默认值」就一律不动——用户配置过就尊重用户配置。"""
+        settings = dict(BASE_SETTINGS)
+        settings['subscription'] = subscription
+        _write_settings(tmp_path, settings)
+
+        Config(str(tmp_path))
+
+        assert _read_settings(tmp_path)['subscription'] == subscription
+
+    def test_missing_block_is_left_alone(self, tmp_path):
+        settings = dict(BASE_SETTINGS)
+        del settings['subscription']
+        _write_settings(tmp_path, settings)
+
+        Config(str(tmp_path))
+
+        assert 'subscription' not in _read_settings(tmp_path)
+
+    def test_missing_settings_file_is_not_created(self, tmp_path):
+        Config(str(tmp_path))
+
+        assert not os.path.exists(os.path.join(str(tmp_path), 'settings.json'))
+
+    def test_broken_json_is_ignored(self, tmp_path):
+        path = os.path.join(str(tmp_path), 'settings.json')
+        with open(path, 'w') as f:
+            f.write('{not json')
+
+        Config(str(tmp_path))  # 不抛错
+
+        with open(path) as f:
+            assert f.read() == '{not json', '损坏的文件保持原样，不覆盖'
+
+    def test_migration_happens_only_once(self, tmp_path):
+        """核心回归锁：迁移后用户手动关闭，再启动必须保持关闭（不会被迁回 true）。"""
+        _write_settings(tmp_path, BASE_SETTINGS)
+
+        Config(str(tmp_path))
+        upgraded = _read_settings(tmp_path)
+        assert upgraded['subscription']['auto_update'] is True
+        assert upgraded['auto_recover'] == Config.DEFAULT_AUTO_RECOVER
+
+        upgraded['subscription']['auto_update'] = False  # 用户主动关闭定时同步
+        _write_settings(tmp_path, upgraded)
+
+        Config(str(tmp_path))
+
+        saved = _read_settings(tmp_path)
+        assert saved['subscription']['auto_update'] is False
+        assert saved['auto_recover'] == Config.DEFAULT_AUTO_RECOVER
+
+    def test_existing_auto_recover_block_skips_migration(self, tmp_path):
+        """有 auto_recover 块 = 新配置：subscription 逐字等于旧默认值也不动。"""
+        settings = dict(BASE_SETTINGS)
+        settings['auto_recover'] = {'enabled': False, 'dead_restart_ticks': 0}
+        _write_settings(tmp_path, settings)
+
+        Config(str(tmp_path))
+
+        saved = _read_settings(tmp_path)
+        assert saved['subscription'] == {'auto_update': False, 'update_interval': 3600}
+        assert saved['auto_recover'] == {'enabled': False, 'dead_restart_ticks': 0}
+
+    def test_upgrade_installs_default_auto_recover_block(self, tmp_path):
+        """旧配置升级后 auto_recover 块就位，内容等于默认值（单一来源常量）。"""
+        _write_settings(tmp_path, BASE_SETTINGS)
+
+        Config(str(tmp_path))
+
+        assert _read_settings(tmp_path)['auto_recover'] == Config.DEFAULT_AUTO_RECOVER
+
+    @pytest.mark.parametrize('block', [
+        {'auto_update': 0, 'update_interval': 3600},
+        {'auto_update': False, 'update_interval': 3600.0},
+    ])
+    def test_strict_type_check_does_not_treat_as_legacy(self, tmp_path, block):
+        """0 与 False、3600.0 与 3600 在 Python 里相等，但不该被判成旧默认值。"""
+        settings = dict(BASE_SETTINGS)
+        settings['subscription'] = block
+        _write_settings(tmp_path, settings)
+
+        Config(str(tmp_path))
+
+        saved = _read_settings(tmp_path)['subscription']
+        assert json.dumps(saved, sort_keys=True) == json.dumps(block, sort_keys=True)

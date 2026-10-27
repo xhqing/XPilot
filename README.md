@@ -22,7 +22,8 @@ A Python command-line framework that makes [Xray](https://github.com/XTLS/Xray-c
 - Supports VMess, VLESS, Trojan, and Shadowsocks protocols
 - Smart node health detection (latency / connectivity)
 - Automatic switching to the lowest-latency usable node (real-traffic based)
-- Subscription auto-import (Base64 / JSON / Clash formats)
+- Self-healing for stale instances: restarts when the running config no longer matches the current node, or when every node fails for several consecutive rounds (rate-limited with backoff, so it cannot restart-loop)
+- Subscription auto-import (Base64 / JSON / Clash formats), with optional periodic sync and an automatic refresh when every node goes dead
 - macOS system proxy integration
 - Flexible routing rule management (proxy / direct / block)
 - Common commands (`start` / `restart` / `stop` / `status`) run in the background and return immediately; logs are persisted to disk for easy troubleshooting
@@ -631,6 +632,10 @@ xpilot subscription add "https://example.com/subscription" --name "My Subscripti
 
 Refreshes nodes from saved subscription sources: matches existing nodes by name and overwrites their connection fields (address, port, UUID, password, cipher, etc.) with the latest from the subscription, while preserving IDs, groups, and custom names; new nodes are also imported. Use `node import` to append without refreshing existing nodes.
 
+The refresh only rewrites the node list (`nodes.json`). If the proxy is running, the live instance still holds the old config in memory — by default the monitor process restarts it within the next cycle so the change takes effect (`auto_recover.enabled`, see the config reference below); with auto-recovery disabled you are prompted to run `xpilot restart` yourself.
+
+Besides running it by hand, you can enable `subscription.auto_update` so the monitor refreshes on `subscription.update_interval`, keeping the local node list current when the provider rotates keys or IPs.
+
 Update all subscription sources:
 
 ```bash
@@ -755,6 +760,8 @@ Why they moved out of `/tmp`: the system purges temporary directories. Once the 
 
 xpilot's own log defaults to `<config dir>/logs/xpilot.log` (override with `log_file` in `settings.json`). When upgrading from 0.6.x, the old default `/tmp/xpilot.log` is migrated to the new default automatically; custom paths are left untouched.
 
+State files left behind in `/tmp` by 0.6.3 and earlier (`xpilot.pid`, `xpilot-auto-switch.pid`, `xpilot-xray.json`, `xpilot-xray-*.log`, `xpilot.log`) are cleaned up on the next `xpilot start` / `stop`, and the log says which ones were removed. A PID file is only removed after confirming the process it describes is really gone — the PID file of a live process is left alone, since deleting it would recreate the "tool doesn't know it is running" drift.
+
 ### How configuration works
 
 - **Initialization**: running `xpilot init` generates the three default config files above under `~/.config/xpilot/`; add `-f` to force-overwrite existing config.
@@ -792,8 +799,15 @@ xpilot config show          # Show current configuration
     "retry_delay": 5
   },
   "subscription": {
-    "auto_update": false,
+    "auto_update": true,
     "update_interval": 3600
+  },
+  "auto_recover": {
+    "enabled": true,
+    "max_restarts": 3,
+    "restart_window": 1800,
+    "min_interval": 60,
+    "dead_restart_ticks": 2
   },
   "system_proxy": {
     "enabled": true,
@@ -802,7 +816,13 @@ xpilot config show          # Show current configuration
 }
 ```
 
-> **watchdog vs auto_switch**: `watchdog` is on by default and restarts the xray process if it exits unexpectedly (keep-alive), independent of whether `auto_switch` is enabled; `auto_switch` is on by default and picks the **lowest-latency usable node** (measured by real traffic) every interval — if the best node isn't the current one, it switches; `hysteresis` avoids flapping between nodes with similar latency. When all nodes are unreachable, it refreshes the subscription (by node name). The two are independent and can be toggled separately.
+> **How watchdog, auto_switch and auto_recover divide the work**: `watchdog` is on by default and restarts the xray process if it exits unexpectedly (keep-alive), independent of whether `auto_switch` is enabled; `auto_switch` is on by default and picks the **lowest-latency usable node** (measured by real traffic) every interval — if the best node isn't the current one, it switches; `hysteresis` avoids flapping between nodes with similar latency. When all nodes are unreachable, it refreshes the subscription (by node name). `auto_recover` is on by default and handles the case where **the process is alive but its config is already wrong**: it restarts once, triggered by either of two conditions — the running instance's config no longer matches the current default node (a `subscription update` refreshed the nodes, or the default node was switched), or all nodes fail a real-traffic probe for `dead_restart_ticks` consecutive rounds (the classic stale-IP scenario). All three are independent and can be toggled separately.
+
+> **How `auto_recover` avoids a restart loop**: at most `max_restarts` restarts inside a `restart_window`-second window, with at least `min_interval` seconds between two attempts. When restarting cannot fix the state (e.g. no reachable node at all), it gives up after that budget and **falls back to warning only**. Setting `dead_restart_ticks` to `<= 0` disables the all-nodes-dead path (a stale config still triggers).
+
+> **Two automatic subscription paths**: `subscription.auto_update` (on by default, with `subscription.update_interval`) is the **routine sync** — the local node list follows within one cycle after the provider rotates keys or IPs. `auto_switch.auto_update_subscription` (on by default, with `subscription_refresh_cooldown`) is the **emergency fallback** — it only fetches when every node fails a real-traffic probe. They are complementary and can be disabled independently.
+
+> **Upgrading from 0.6.4 or earlier upgrades `settings.json` once**: the `auto_recover` block is added with its defaults, and `subscription.auto_update` is flipped from the old `false` (a value that never took effect) to `true`. The upgrade runs only once — the presence of the `auto_recover` block marks the file as upgraded. After that, setting `auto_update` back to `false` really disables the sync and it will not be reverted.
 
 ### routing.json field reference
 

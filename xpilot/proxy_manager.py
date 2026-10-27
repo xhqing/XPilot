@@ -9,7 +9,19 @@ import logging
 import time
 import platform
 
+from .legacy_cleanup import cleanup_legacy_state
+
 logger = logging.getLogger(__name__)
+
+
+def _legacy_cleanup_log(level: str, message: str) -> None:
+    """把遗留文件清理的日志转发到本模块 logger（统一日志出口）。"""
+    if level == 'warning':
+        logger.warning(message)
+    elif level == 'error':
+        logger.error(message)
+    else:
+        logger.info(message)
 
 
 class ProxyError(Exception):
@@ -55,8 +67,21 @@ class ProxyManager:
         self.stdout_log_path = os.path.join(self.runtime_dir, 'xray-stdout.log')
         self.stderr_log_path = os.path.join(self.runtime_dir, 'xray-stderr.log')
 
+    def cleanup_legacy_state(self) -> list:
+        """清理 0.6.3 及更早版本遗留在临时目录的状态文件（Issue #5）。
+
+        旧版本的 PID / 运行配置 / 日志写在 ``/tmp``，新版本一律读
+        ``<配置目录>/run``，旧文件是惰性的但会误导事故排查。只删白名单
+        里的名字，PID 文件先确认其描述的进程已死（删活进程的 PID 文件会
+        重新制造状态错位）。返回实际删除的路径列表。
+        """
+        return cleanup_legacy_state(log=_legacy_cleanup_log)
+
     def start(self, node_id: str = None) -> bool:
         """Start proxy service with specified node."""
+        # 探测运行状态之前先清掉旧版本遗留文件：让后续判定只看当前版本的
+        # 状态文件，也避免旧的 /tmp/xpilot.pid 被误认为活实例。
+        self.cleanup_legacy_state()
         state = self.probe_runtime()
         if state['running']:
             # 孤儿 / 多实例处置：宁可拒绝启动，也不让两个 xray 同时抢同一个端口
@@ -192,6 +217,10 @@ class ProxyManager:
             self.set_system_proxy(False)
         except Exception as e:
             logger.warning(f'Failed to disable system proxy: {e}')
+
+        # 收尾时顺手清理旧版本遗留文件（Issue #5）：stop 完还有人翻 /tmp 的
+        # 时候，看到的应该是干净状态。
+        self.cleanup_legacy_state()
 
         logger.info('Proxy stopped')
         return True
