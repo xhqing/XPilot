@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+### 变更（移除访问量徽章，配合停用集中式流量采集）
+
+- **为什么改**：用户 2026-11-04 决定停用 xhqing 仓库的集中式访问量采集，同时不再在各仓库 README 展示访问量徽章。徽章的数据源必须由采集任务每天刷新，采集停掉之后徽章会冻结在旧值，而徽章文案写的是「Visits/day (14d)」——数字不再更新却仍显示成实时数据，留着反而误导读者。
+- **改了什么**：`README.md` / `README_cn.md` 顶部徽章区删除那一枚 shields.io 访问量徽章（整行删除，数据源 `https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/<仓库名>.json`）；License / Version / Type 等其它徽章与正文一个字未动。
+- **回归检查**：只删这一整行，徽章区所在的 `<p align="center">` / `<div>` 结构与相邻徽章不受影响；README 其余内容零改动。
+
 ### 变更
 
 - **子项目 `.pi` 由软链接改为真实目录 + 资源引用（2026-10-30 全局规则修订）**：为什么改——用户 2026-10-30 修订「智能体专属文件」规则，旧做法把本仓库 `.pi` 整个软链接到 `~/Developer/FullStackEngineerAgent/.pi`，等于把「共享」和「独占」压在同一个符号上：本仓库往 `.pi` 写任何文件都会直接落进 Agent 项目、影响全部兄弟子项目并进它的 git 历史；而 `AGENTS.md` 没有 include 机制，想用复制做超集又必然随 Agent 侧演进而漂移。改了什么——①删除 `.pi → ../FullStackEngineerAgent/.pi` 软链接，改为本仓库自己的**真实目录** `.pi/`；②新增 `.pi/settings.json`，用路径把 Agent 项目的 `extensions` / `skills` / `prompts` / `themes` 四个资源目录引用进来，并保留本地的同名目录（本地新增资源由自动发现处理、不必写进 settings）；③`AGENTS.md → ../FullStackEngineerAgent/AGENTS.md` 软链接保持不变（身份层直接对齐、不做超集）。纪律：本仓库 `.pi/` 只允许**追加**（自己的资源目录、`.pi/APPEND_SYSTEM.md`），不允许重述 / 覆盖基座规则；子项目专属规则用 `APPEND_SYSTEM.md`，不要用 `SYSTEM.md`（后者是整体替换，会把 agent 身份冲掉）。详见全局 `~/.pi/agent/docs/agents-registry.md`「智能体专属文件归属与子项目映射（2026-10-30 修订）」。
