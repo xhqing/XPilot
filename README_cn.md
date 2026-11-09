@@ -901,7 +901,7 @@ xpilot config set log_level debug
 
 本项目基于 [MIT 协议](LICENSE.md) 开源。
 
-Copyright (c) 2026 xhqing <https://github.com/xhqing>。
+Copyright (c) 2026 xhqing and contributors。
 
 ### 署名方式
 
