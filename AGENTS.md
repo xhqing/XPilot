@@ -1,12 +1,12 @@
 # XPilot
 
-> FullStackEngineerAgent（Atlas）名下的子项目 · 本项目规则本体
+> dev-agent（Atlas）名下的子项目 · 本项目规则本体
 
 Python 命令行框架，把 [Xray](https://github.com/XTLS/Xray-core) 的日常运维包成简单命令：节点管理、服务控制、健康检测、自动切换、路由规则、订阅自动导入。macOS 系统代理集成。
 
 ## 归谁负责
 
-本项目由 **Atlas**（FullStackEngineerAgent）负责维护。改动范围跨出本项目时，先向 Atlas 说明，不自行扩张改动面。
+本项目由 **Atlas**（dev-agent）负责维护。改动范围跨出本项目时，先向 Atlas 说明，不自行扩张改动面。
 
 ## 你的角色
 
