@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+### 变更（AGENTS.md 角色口径更新为三级 agentLeader / subLeader / Worker，2026-11-25）
+
+- **为什么改**：用户 2026-11-25 把全团队 Leader / Worker 重定义为三级角色（agentLeader = Agent 项目主工作区 main、subLeader = 子项目主工作区 main、Worker = 任何项目的非 main 分支 worktree）。原 `AGENTS.md` 写的是「本项目（或其 worktree）= Worker、建删 worktree 是 Atlas（Leader）的活」，把子项目主工作区 main 也说成了 Worker，与全局规则冲突。
+- **改了什么**：`AGENTS.md`「你的角色」节改为按「当前是否停在 main」判定——本项目主工作区 main = subLeader（ff 同步 local main、建删自身 worktree、派 Worker、合并自身 PR、发自身版本、回收 Worker，对 dev-agent 与 sibling 只读），非 main 分支 worktree = Worker（只干当前 worktree，不碰 local main、不建删 worktree）；规则索引表里的「Leader / Worker 分工」改为「agentLeader / subLeader / Worker 分工」。`.pi/APPEND_SYSTEM.md` 逐条核对：没有「任何分支 / worktree = Worker」类角色定义，测试只读节里的「Leader」按全局术语口径保留，未改。
+- **回归检查**：只改角色表述，项目硬约束、验证要求、测试只读约定一字未动；版本号不动（文档类改动，不触发 bump / 发版）。
+
 ### 变更（移除访问量徽章，配合停用集中式流量采集）
 
 - **为什么改**：用户 2026-11-04 决定停用 xhqing 仓库的集中式访问量采集，同时不再在各仓库 README 展示访问量徽章。徽章的数据源必须由采集任务每天刷新，采集停掉之后徽章会冻结在旧值，而徽章文案写的是「Visits/day (14d)」——数字不再更新却仍显示成实时数据，留着反而误导读者。
